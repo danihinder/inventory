@@ -1,0 +1,1702 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <meta name="theme-color" content="#1a56db">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Inventory Scanner</title>
+  <link rel="manifest" href="manifest.json">
+
+  <!-- ZXing: Code128 + QR on iOS & Android -->
+  <script src="https://unpkg.com/@zxing/library@0.18.6/umd/index.min.js"></script>
+  <!-- SheetJS: read + write xlsx in browser -->
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <!-- QRCode.js: generate QR codes (qrcodejs via cdnjs) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --blue:   #1a56db;
+      --green:  #38a169;
+      --red:    #e53e3e;
+      --orange: #dd6b20;
+      --bg:     #f0f4f8;
+      --card:   #ffffff;
+      --border: #e2e8f0;
+      --muted:  #718096;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: #1a202c;
+      min-height: 100dvh;
+      overflow-x: hidden;
+    }
+
+    /* ── HEADER ── */
+    header {
+      background: var(--blue);
+      color: #fff;
+      padding: 9px 16px;
+      text-align: center;
+      position: sticky;
+      top: 0;
+      z-index: 60;
+    }
+    header h1 { font-size: 17px; font-weight: 700; }
+
+    /* ── PAGES ── */
+    .page { display: none; padding: 14px 14px 30px; }
+    .page.active { display: block; }
+
+    /* ── NAV LINKS ── */
+    .page-links {
+      display: flex; gap: 32px; justify-content: center;
+      padding: 20px 0 8px;
+    }
+    .page-link {
+      color: var(--blue); font-weight: 600; cursor: pointer;
+      font-size: 15px; -webkit-tap-highlight-color: transparent;
+    }
+    .back-link {
+      color: var(--blue); font-weight: 600; cursor: pointer;
+      font-size: 15px; display: inline-block; padding: 4px 0 14px;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* ── CARD ── */
+    .card {
+      background: var(--card);
+      border-radius: 14px;
+      padding: 16px;
+      margin-bottom: 14px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+    }
+    .card h2 { font-size: 16px; font-weight: 700; margin-bottom: 10px; }
+
+    /* ── BUTTONS ── */
+    .btn {
+      display: block; width: 100%;
+      padding: 14px 16px;
+      border-radius: 12px; border: none;
+      font-size: 16px; font-weight: 600;
+      cursor: pointer; text-align: center;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .btn + .btn { margin-top: 10px; }
+    .btn-primary { background: var(--blue);   color: #fff; }
+    .btn-success { background: var(--green);  color: #fff; }
+    .btn-danger  { background: var(--red);    color: #fff; }
+    .btn-outline { background: #fff; color: var(--blue); border: 2px solid var(--blue); }
+    .btn-sm      { padding: 10px 14px; font-size: 14px; }
+
+    /* ── STATS ── */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .stat {
+      background: var(--card);
+      border-radius: 12px;
+      padding: 12px 8px;
+      text-align: center;
+      box-shadow: 0 1px 3px rgba(0,0,0,.07);
+    }
+    .stat .n  { font-size: 30px; font-weight: 800; line-height: 1; }
+    .stat .lbl{ font-size: 11px; color: var(--muted); margin-top: 3px; }
+    .stat.ok   .n { color: var(--green); }
+    .stat.miss .n { color: var(--red);   }
+    .stat.xtra .n { color: var(--orange);}
+
+    /* ── PROGRESS ── */
+    .pbar { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+    .pfill{ height: 100%; background: var(--green); border-radius: 4px; transition: width .4s; }
+    .ptext{ text-align: center; font-size: 12px; color: var(--muted); margin-top: 5px; }
+
+    /* ── SCANNER ── */
+    .scanner-wrap {
+      position: relative;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #000;
+    }
+    .scanner-wrap video { width: 100%; display: block; }
+    #scan-hint {
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+      padding: 10px 0 4px;
+    }
+
+    /* ── MODAL ── */
+    .modal-bg {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.55);
+      z-index: 200;
+      align-items: flex-end;
+    }
+    .modal-bg.open { display: flex; }
+    .modal {
+      background: var(--card);
+      border-radius: 22px 22px 0 0;
+      padding: 24px 20px;
+      width: 100%;
+      padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+    }
+    .modal-title   { font-size: 20px; font-weight: 800; margin-bottom: 2px; }
+    .modal-sub     { font-size: 13px; color: var(--muted); margin-bottom: 18px; }
+
+    /* info grid in modal */
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      background: var(--bg);
+      border-radius: 12px;
+      padding: 12px;
+      margin-bottom: 18px;
+    }
+    .info-grid.expert { grid-template-columns: repeat(3, 1fr); }
+    .info-expert { display: none; }
+    .info-grid.expert .info-expert { display: block; }
+    .info-cell { text-align: center; }
+    .info-cell .lbl { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+    .info-cell .val { font-size: 24px; font-weight: 800; }
+    .val-ok     { color: var(--green); }
+    .val-warn   { color: var(--orange); }
+    .val-neutral{ color: #2d3748; }
+
+    /* qty control */
+    .qty-row {
+      display: flex; align-items: center;
+      gap: 14px; margin: 4px 0 8px;
+    }
+    .qty-btn {
+      width: 58px; height: 58px;
+      border-radius: 50%; border: none;
+      font-size: 30px; font-weight: 300;
+      cursor: pointer; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .qty-btn.minus { background: #fed7d7; color: var(--red);   }
+    .qty-btn.plus  { background: #c6f6d5; color: var(--green); }
+    .qty-input-wrap { flex: 1; text-align: center; }
+    #qty-val {
+      width: 90px; height: 58px;
+      border: 2px solid var(--border); border-radius: 12px;
+      text-align: center; font-size: 30px; font-weight: 700;
+      color: var(--blue);
+    }
+    .qty-total {
+      text-align: center; font-size: 13px;
+      color: var(--muted); margin: 6px 0 18px;
+    }
+    .qty-total strong { font-size: 20px; color: #1a202c; }
+
+    /* ── SEARCH ── */
+    .search-row { display: flex; gap: 8px; margin-bottom: 12px; }
+    .search-row input {
+      flex: 1; padding: 12px 14px;
+      border: 2px solid var(--border); border-radius: 12px;
+      font-size: 16px;
+    }
+    .search-row input:focus { outline: none; border-color: var(--blue); }
+    .search-row button {
+      padding: 12px 16px;
+      background: var(--blue); color: #fff;
+      border: none; border-radius: 12px;
+      font-size: 20px; cursor: pointer;
+    }
+
+    /* result table */
+    .rtable { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .rtable th {
+      text-align: left; padding: 8px 6px;
+      border-bottom: 2px solid var(--border);
+      color: var(--muted); font-weight: 600;
+    }
+    .rtable td { padding: 9px 6px; border-bottom: 1px solid var(--bg); }
+    .rtable tr:last-child td { border-bottom: none; }
+
+    /* ── QR export container ── */
+    #qr-container img, #qr-container canvas { border-radius: 8px; max-width: 100%; }
+
+    /* ── video QR modal ── */
+    #video-qr { width: 100%; border-radius: 12px; display: block; }
+
+    /* ── misc ── */
+    .hidden { display: none !important; }
+    .divider { border: none; border-top: 1px solid var(--border); margin: 18px 0; }
+    .tag {
+      display: inline-block; padding: 3px 10px;
+      border-radius: 999px; font-size: 12px; font-weight: 600;
+    }
+    .tag-ok   { background: #c6f6d5; color: #276749; }
+    .tag-miss { background: #fed7d7; color: #742a2a; }
+    .tag-xtra { background: #fefcbf; color: #744210; }
+
+    details summary { cursor: pointer; user-select: none; padding: 6px 0; }
+    details[open] summary { margin-bottom: 8px; }
+
+    .btn-sound        { background: var(--green); color: #fff; border: none; }
+    .btn-sound.off    { background: #fff; color: var(--muted); border: 2px solid var(--border); }
+
+    /* ── NORMAL / EXPERT MODE LAYOUT ── */
+    /* beide Modi nutzen dasselbe Layout auf der Hauptseite */
+
+    /* ── KLICKBARE TABELLENZEILEN ── */
+    .row-link { cursor: pointer; }
+    .row-link:active { background: #edf2f7; }
+
+    /* ── AGE RANK COLORS ── */
+    .age-x, .age-0 { color: #1a202c; }
+    .age-1 { color: #4a5568; }
+    .age-2 { color: #718096; }
+    .age-3 { color: #8a9ab0; }
+    .age-4 { color: #a0b0c0; }
+    .age-5 { color: #b5c4cf; }
+
+  </style>
+</head>
+
+<body>
+
+<header>
+  <h1>📦 Inventory Scanner <span id="build-lbl" style="font-size:11px;font-weight:400;opacity:.55;cursor:default" onclick="onBuildTap()">Build 60</span></h1>
+</header>
+
+<!-- ═══════════════════ PAGE: INVENTUR ═══════════════════ -->
+<div class="page active" id="page-inv">
+
+  <!-- LOAD CARD (shown when no file loaded) -->
+  <div class="card" id="load-card">
+    <h2>Load Inventory File</h2>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">
+      Open "Inventory CHU.xxxx CustomerName.xlsx" from email.
+    </p>
+    <button class="btn btn-primary" onclick="document.getElementById('file-inp').click()">
+      📂 Open XLSX from Email
+    </button>
+    <input type="file" id="file-inp" accept=".xlsx,.xls" class="hidden" onchange="onFileLoad(this)">
+    <p id="load-msg" style="font-size:13px;color:var(--muted);margin-top:10px"></p>
+  </div>
+
+  <!-- SCAN CARD (shown when file loaded) -->
+  <div class="hidden" id="scan-card">
+    <p id="inv-info" style="font-size:13px;font-weight:600;color:var(--muted);margin-bottom:12px">
+      Loaded inventory: <span id="inv-info-text" style="color:#1a202c">—</span>
+    </p>
+    <div class="card" style="padding:14px">
+      <div class="pbar"><div class="pfill" id="pfill-stk" style="width:0%"></div></div>
+      <div class="ptext" id="ptext-stk">—</div>
+      <button class="btn btn-primary" id="btn-cam" style="margin-top:12px" onclick="toggleScan()">
+        📷 Start Scanning
+      </button>
+    </div>
+
+    <!-- Manual entry -->
+    <div class="card">
+      <h2 style="margin-bottom:10px">Manual Entry</h2>
+      <div class="search-row">
+        <input type="text" id="manual-inp" placeholder="Part number …" inputmode="numeric"
+               onkeyup="if(event.key==='Enter')onManualAdd()">
+        <button onclick="onManualAdd()">➕</button>
+      </div>
+    </div>
+
+    <!-- Gezählte Artikel + Aktionen -->
+    <div id="normal-finish-section">
+      <span id="age-hint-main" onclick="openAgeModal()" style="display:none;text-align:right;font-size:14px;cursor:pointer;-webkit-tap-highlight-color:transparent;margin-bottom:2px">ℹ️</span>
+      <div id="normal-finish-body"></div>
+      <button class="btn btn-success" style="margin-top:4px" onclick="shareXLSX()">
+        ⬇️ Download Filled XLSX
+      </button>
+      <div id="share-info-normal" class="hidden" style="background:var(--bg);border-radius:10px;padding:10px 12px;margin-top:8px;font-size:12px;color:var(--muted);line-height:1.8">
+        <div>📧 <strong style="color:#1a202c">To:</strong> servicematerialscontrolling@canon.ch</div>
+        <div>📋 <strong style="color:#1a202c">Subject:</strong> <span id="share-subject-normal">—</span></div>
+      </div>
+      <hr class="divider">
+      <button class="btn btn-danger btn-sm" onclick="resetSession()">
+        🗑 Start New Inventory
+      </button>
+    </div>
+
+  </div>
+
+  <!-- Links zu Suche, Merge und Lagerübersicht -->
+  <div class="page-links" style="flex-wrap:wrap;gap:14px 24px">
+    <span class="page-link" onclick="showPage('suche')">🔍 Part Search →</span>
+    <span id="merge-link" class="page-link" style="display:none" onclick="showPage('merge')">🤝 Merge →</span>
+    <span class="page-link" onclick="showPage('lager')">🏪 Warehouse Overview →</span>
+  </div>
+  <p id="merge-warn" class="hidden" style="font-size:11px;color:var(--orange);text-align:center;margin:0 0 8px">⚠️ If merge planned: merge now, then continue scanning</p>
+</div>
+
+<!-- ═══════════════════ PAGE: TEILSUCHE ═══════════════════ -->
+<div class="page hidden" id="page-suche">
+  <span class="back-link" onclick="showPage('inv')">← back to inventory</span>
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px">
+      <h2 style="margin-bottom:0">🔍 Part Search</h2>
+      <span onclick="openAgeModal()" style="font-size:14px;cursor:pointer;-webkit-tap-highlight-color:transparent">ℹ️</span>
+    </div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:12px">
+      Where is which quantity? QOH = Stock on hand · MIN = Reorder quantity
+    </p>
+    <div class="search-row">
+      <input type="text" id="srch-inp" placeholder="Part number …" inputmode="numeric"
+             onkeyup="if(event.key==='Enter')doSearch()">
+      <button onclick="doSearch()">🔍</button>
+    </div>
+    <button class="btn btn-outline btn-sm" style="margin-bottom:6px" onclick="startSearchScan()">📷 Scan Barcode</button>
+    <div style="text-align:right;margin-bottom:12px">
+      <span onclick="openWhFilter()" style="font-size:12px;color:var(--muted);cursor:pointer">⚙ Filter warehouses</span>
+    </div>
+    <div id="srch-result"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════ PAGE: MERGE ═══════════════════ -->
+<div class="page hidden" id="page-merge">
+  <span class="back-link" onclick="clearMergeQR(); showPage('inv')">← back to inventory</span>
+  <div class="card">
+    <h2>🤝 Merge Colleague Scans</h2>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:16px">
+      Colleague shows their QR code → you scan it → quantities are added.
+    </p>
+    <button class="btn btn-primary" onclick="startQRImport()">
+      📷 Scan Colleague's QR Code
+    </button>
+
+    <hr class="divider">
+
+    <h2 style="margin-bottom:8px">Share My Scan</h2>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:12px">
+      Colleague scans this QR code with the app.
+    </p>
+    <button class="btn btn-outline" onclick="showExportQR()">
+      🔲 Show QR Code
+    </button>
+    <div id="qr-container" class="hidden" style="display:flex;justify-content:center;margin:16px 0"></div>
+    <p id="qr-msg" style="font-size:14px;text-align:center;margin-top:8px;font-weight:600"></p>
+    <p style="font-size:12px;color:var(--orange);margin-top:14px;line-height:1.6">
+      ⚠️ After sharing: please stop scanning. The receiving colleague continues alone until the end.
+    </p>
+  </div>
+</div>
+
+
+<!-- ═══════════════════ PAGE: LAGERÜBERSICHT ═══════════════════ -->
+<div class="page hidden" id="page-lager">
+  <span class="back-link" onclick="showPage('inv')">← back to inventory</span>
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px">
+      <h2 style="margin-bottom:0">🏪 Warehouse Overview</h2>
+      <span onclick="openAgeModal()" style="font-size:14px;cursor:pointer;-webkit-tap-highlight-color:transparent">ℹ️</span>
+    </div>
+    <div style="margin-bottom:6px">
+      <select id="lager-select" style="width:100%;padding:10px 12px;border:2px solid var(--border);border-radius:12px;font-size:15px;background:#fff;color:#1a202c" onchange="showLager()">
+        <option value="">— Select Warehouse —</option>
+      </select>
+    </div>
+    <div style="text-align:right;margin-bottom:12px">
+      <span onclick="openWhFilter()" style="font-size:12px;color:var(--muted);cursor:pointer">⚙ Filter warehouses</span>
+    </div>
+    <div id="lager-body"></div>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════
+     AGE LEGEND MODAL
+══════════════════════════════════════════ -->
+<div class="modal-bg" id="age-modal" onclick="if(event.target===this)closeAgeModal()">
+  <div class="modal">
+    <div class="modal-title" style="margin-bottom:16px">Colors by Storage Duration</div>
+    <div style="display:flex;flex-direction:column;gap:12px;margin:18px 0;font-size:15px;font-weight:600">
+      <div class="age-0">⬤&ensp;&lt; 30 days</div>
+      <div class="age-1">⬤&ensp;30–60 days</div>
+      <div class="age-2">⬤&ensp;61–90 days</div>
+      <div class="age-3">⬤&ensp;91–180 days</div>
+      <div class="age-4">⬤&ensp;181–360 days</div>
+      <div class="age-5">⬤&ensp;&gt; 360 days</div>
+      <div class="age-x">⬤&ensp;Excluded</div>
+    </div>
+    <p id="modal-stand" style="display:none;font-size:12px;color:var(--muted);margin-bottom:16px"></p>
+    <button class="btn btn-outline" onclick="closeAgeModal()">Close</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     WAREHOUSE FILTER MODAL
+══════════════════════════════════════════ -->
+<div class="modal-bg" id="wh-filter-modal" onclick="if(event.target===this)closeWhFilter()">
+  <div class="modal">
+    <div class="modal-title" style="margin-bottom:12px">Warehouse Filter</div>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn btn-outline btn-sm" onclick="whFilterAll()">Select All</button>
+      <button class="btn btn-outline btn-sm" onclick="whFilterNone()">Deselect All</button>
+    </div>
+    <div id="wh-filter-list" style="max-height:55vh;overflow-y:auto;margin-bottom:16px"></div>
+    <button class="btn btn-primary" onclick="closeWhFilter()">Done</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     QUANTITY MODAL
+══════════════════════════════════════════ -->
+<div class="modal-bg" id="qty-modal">
+  <div class="modal">
+    <div class="modal-title" id="m-nr">—</div>
+    <div class="modal-sub"   id="m-name">—</div>
+
+    <div class="info-grid" id="qty-info-grid">
+      <div class="info-cell">
+        <div class="lbl">Counted so far</div>
+        <div class="val val-neutral" id="m-cur">0</div>
+      </div>
+      <div class="info-cell info-expert">
+        <div class="lbl">MIN per System</div>
+        <div class="val val-neutral" id="m-min">—</div>
+      </div>
+      <div class="info-cell info-expert">
+        <div class="lbl">QOH per System</div>
+        <div class="val val-neutral" id="m-qoh">—</div>
+      </div>
+    </div>
+
+    <p style="text-align:center;font-size:14px;color:var(--muted);margin-bottom:8px">Add now:</p>
+    <div class="qty-row">
+      <button class="qty-btn minus" onclick="adjQty(-1)">−</button>
+      <div class="qty-input-wrap">
+        <input type="number" id="qty-val" value="1" min="1" max="999" onchange="refreshTotal()">
+      </div>
+      <button class="qty-btn plus"  onclick="adjQty(+1)">+</button>
+    </div>
+    <div class="qty-total">New total: <strong id="m-total">1</strong></div>
+
+    <button class="btn btn-success" onclick="confirmQty()">✓ Add</button>
+    <button class="btn btn-outline" style="margin-top:10px" onclick="closeQtyModal()">Cancel</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     MAIN SCAN MODAL (inventory)
+══════════════════════════════════════════ -->
+<div class="modal-bg" id="scan-modal">
+  <div class="modal">
+    <div class="scanner-wrap">
+      <video id="video-main" playsinline muted autoplay></video>
+    </div>
+    <p id="scan-hint" style="text-align:center;color:var(--muted);font-size:13px;padding:10px 0 4px">
+      Hold barcode in the center of the frame …
+    </p>
+    <div style="display:flex;gap:8px;margin-top:4px">
+      <button class="btn btn-sm btn-sound" id="btn-sound-main" onclick="toggleSound()" style="flex:1">🔔 Sound</button>
+      <button class="btn btn-outline btn-sm" style="flex:1" onclick="stopScan()">⏹ Stop</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     QR SCAN MODAL (import colleague)
+══════════════════════════════════════════ -->
+<div class="modal-bg" id="qr-modal">
+  <div class="modal">
+    <h2 style="margin-bottom:16px">Scan QR Code</h2>
+    <video id="video-qr" playsinline muted autoplay></video>
+    <button class="btn btn-outline" style="margin-top:16px" onclick="closeQRModal()">Cancel</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     SEARCH SCAN MODAL
+══════════════════════════════════════════ -->
+<div class="modal-bg" id="ss-modal">
+  <div class="modal">
+    <div class="scanner-wrap">
+      <video id="video-ss" playsinline muted autoplay></video>
+    </div>
+    <p style="text-align:center;color:var(--muted);font-size:13px;padding:10px 0 4px">
+      Hold barcode in the center of the frame …
+    </p>
+    <div style="display:flex;gap:8px;margin-top:4px">
+      <button class="btn btn-sm btn-sound" id="btn-sound-ss" onclick="toggleSound()" style="flex:1">🔔 Sound</button>
+      <button class="btn btn-outline btn-sm" style="flex:1" onclick="closeSSModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════
+     JAVASCRIPT
+══════════════════════════════════════════ -->
+<script>
+'use strict';
+
+// ── CONFIG ──────────────────────────────────────────────────────────────────
+const MASTERLIST_URL  = 'data/masterlist.json';
+const SESSION_KEY     = 'inventur_v1';
+const WH_FILTER_KEY   = 'inventur_wh_filter';
+const BUILD           = 60;
+
+let whFilter = null; // null = all visible; Set<sub> = filtered
+
+// ── ANALYTICS ────────────────────────────────────────────────────────────────
+// Set this to your Google Apps Script Web App URL to enable tracking.
+// Leave empty to disable analytics.
+const ANALYTICS_URL = 'https://script.google.com/macros/s/AKfycbzEEXG3AxdzTtIDh2c2Q5CAqFJiMUN_SvOGDCtLLoaZkbUthVUlJA23rq73oI8tPz5H/exec';
+
+function _getUUID() {
+  const urlU = new URLSearchParams(location.search).get('u');
+  if (urlU) localStorage.setItem('inventur_uuid', urlU);
+  let id = localStorage.getItem('inventur_uuid');
+  if (!id) {
+    id = crypto.randomUUID?.() || (Math.random().toString(36).slice(2) + Date.now().toString(36));
+    localStorage.setItem('inventur_uuid', id);
+  }
+  return id;
+}
+
+function track(event, extra = {}) {
+  if (!ANALYTICS_URL) return;
+  try {
+    const p = new URLSearchParams({ uuid: _getUUID(), event, build: BUILD, ...extra });
+    fetch(ANALYTICS_URL + '?' + p, { mode: 'no-cors' }).catch(() => {});
+  } catch (_) {}
+}
+
+// ── STATE ────────────────────────────────────────────────────────────────────
+const S = {
+  ml:        null,   // masterlist JSON
+  inv:       null,   // [{tag, item, bezeichnung, subinventory, rowIdx}]
+  wh:        null,   // "CHU.8678"
+  whName:    null,   // "Edubook"
+  fname:     null,   // original filename
+  fdata:     null,   // ArrayBuffer of original xlsx
+  fdataB64:  null,   // base64 of fdata (for localStorage)
+  scanned:   {},     // {itemNr: count}
+};
+
+// ── READERS ──────────────────────────────────────────────────────────────────
+let reader1D = null;  // main scanner
+let readerQR = null;  // QR import
+let readerSS = null;  // search scan
+
+// Pending item for qty modal
+let pendingCode = null;
+
+// Debounce
+let lastCode = null, lastCodeTime = 0;
+
+// Scanner auto-reopen after qty confirm
+let scannerAutoReopen = false;
+
+// Sound + Haptic
+let soundOn  = localStorage.getItem('inventur_sound') !== '0'; // default: an
+let audioCtx = null;
+
+// Expert Mode
+let expertMode = localStorage.getItem('inventur_expert') === '1';
+let _buildTaps = 0, _buildTimer = null;
+function onBuildTap() {
+  _buildTaps++;
+  clearTimeout(_buildTimer);
+  _buildTimer = setTimeout(() => { _buildTaps = 0; }, 2000);
+  if (_buildTaps >= 7) {
+    _buildTaps = 0;
+    clearTimeout(_buildTimer);
+    if (expertMode) {
+      expertMode = false;
+      localStorage.removeItem('inventur_expert');
+      _updateBuildLabel();
+      applyMode();
+      track('expert_off');
+    } else {
+      const pin = prompt('PIN:');
+      if (pin) {
+        const _expertHashes = {
+          'c3e1738736e102ee572cf25b2c15d4956ff121bc988ac13abdab872f35cbf2bc': 'dh',
+          '8ff4d05d21c2ba16af7c41abf4b75eb2855e291ef34bcbbd30a91dc371e03f1e': 'p1',
+          'd677f6e2b9720bcbbac2b9d163885fef453713e46bbc44421fd4f4ffb5f41285': 'p2',
+          'ce8457d59078a699acb70416f88155a96a906b7b7aad43708402e3a3bcc8a4b4': 'p3',
+          '61b8fa28b26002401d2404da5d867ca7cdb3089e8d845b3a5cf69f10fc637116': 'p4',
+          '8d57a52196dfab7020a5cf06e22e81c32e263ca7797ffaf26fa5954d2a7943d6': 'p5',
+          '67f762206af09f4b730a7e1f6c41ee8fc2438e189dbff015f4e9908a105a96c5': 'p6',
+        };
+        crypto.subtle.digest('SHA-256', new TextEncoder().encode(pin)).then(buf => {
+          const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+          const id = _expertHashes[hex];
+          if (id) {
+            expertMode = true;
+            localStorage.setItem('inventur_expert', '1');
+            _updateBuildLabel();
+            applyMode();
+            track('expert_on', {v: id});
+          }
+        });
+      }
+    }
+  }
+}
+function _updateBuildLabel() {
+  const el = document.getElementById('build-lbl');
+  if (!el) return;
+  el.style.opacity = expertMode ? '1' : '.55';
+  el.style.color   = expertMode ? '#f59e0b' : '';
+}
+
+function isWhVisible(sub) {
+  return whFilter === null || whFilter.has(sub);
+}
+
+function applyMode() {
+  if (expertMode) {
+    document.body.classList.add('expert-mode');
+  } else {
+    document.body.classList.remove('expert-mode');
+  }
+  renderNormalFinish();
+}
+
+function ageClass(item, wh) {
+  const a = S.ml?.i?.[item]?.l?.[wh]?.a;
+  if (a == null) return '';
+  if (a === -1) return 'age-x';
+  return a >= 0 && a <= 5 ? 'age-' + a : '';
+}
+
+// ── INIT ─────────────────────────────────────────────────────────────────────
+(async () => {
+  // Load masterlist from GitHub Pages
+  try {
+    const r = await fetch(MASTERLIST_URL);
+    if (r.ok) S.ml = await r.json();
+  } catch (e) { console.warn('masterlist not loaded:', e); }
+  try {
+    const raw = localStorage.getItem(WH_FILTER_KEY);
+    if (raw) whFilter = new Set(JSON.parse(raw));
+  } catch(e) {}
+  // Auto-add new warehouses that aren't in the saved filter yet
+  if (whFilter !== null && S.ml?._w) {
+    let changed = false;
+    for (const sub of Object.keys(S.ml._w)) {
+      if (!whFilter.has(sub)) { whFilter.add(sub); changed = true; }
+    }
+    if (changed) localStorage.setItem(WH_FILTER_KEY, JSON.stringify([...whFilter]));
+  }
+  initLager();
+
+  // Restore session
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (raw) {
+      const s = JSON.parse(raw);
+      Object.assign(S, {
+        inv:      s.inv,
+        wh:       s.wh,
+        whName:   s.whName,
+        fname:    s.fname,
+        fdataB64: s.fdataB64,
+        scanned:  s.scanned || {},
+      });
+      if (S.fdataB64) {
+        S.fdata = b64ToBuffer(S.fdataB64);
+      }
+      if (S.inv) showScanCard();
+    }
+  } catch (e) { console.warn('session restore failed:', e); }
+
+  updateUI();
+  updateSoundButtons();
+  _updateBuildLabel();
+  applyMode();
+  const ua = navigator.userAgent;
+  const os = /iPhone|iPad/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac/.test(ua) ? 'Mac' : 'other';
+  const br = /CriOS/.test(ua) ? 'Chrome/iOS' : /FxiOS/.test(ua) ? 'Firefox/iOS' : /EdgA|EdgiOS/.test(ua) ? 'Edge' : /Chrome/.test(ua) ? 'Chrome' : /Safari/.test(ua) ? 'Safari' : /Firefox/.test(ua) ? 'Firefox' : 'other';
+  track('app_open', { os, br });
+
+  // ── Web Share Target: eingehende XLSX-Datei verarbeiten ──────────────────
+  if (location.search.includes('share-incoming=1')) {
+    history.replaceState({}, '', location.pathname);
+    try {
+      const shareCache = await caches.open('inventur-share');
+      const resp = await shareCache.match('incoming-file');
+      if (resp) {
+        const filename = resp.headers.get('X-Filename') || 'shared.xlsx';
+        const buf = await resp.arrayBuffer();
+        await shareCache.delete('incoming-file');
+        await _loadXlsx(buf, filename, document.getElementById('load-msg'));
+      }
+    } catch (e) { console.warn('Share target error:', e); }
+  }
+})();
+
+// ── PAGE NAVIGATION ──────────────────────────────────────────────────────────
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const page = document.getElementById('page-' + name);
+  page.classList.remove('hidden');
+  page.classList.add('active');
+  if (name === 'lager') track('lager_viewed');
+}
+
+function initLager() {
+  if (!S.ml) return;
+  const stand = S.ml._stand || '';
+  if (stand) {
+    const el = document.getElementById('modal-stand');
+    if (el) { el.textContent = 'Data as of: ' + stand; el.style.display = ''; }
+  }
+  const sel = document.getElementById('lager-select');
+  if (!sel || !S.ml._w) return;
+  sel.innerHTML = '<option value="">— Select Warehouse —</option>';
+  const entries = Object.entries(S.ml._w).filter(([sub]) => isWhVisible(sub)).sort((a, b) => a[1].localeCompare(b[1]));
+  for (const [sub, name] of entries) {
+    const opt = document.createElement('option');
+    opt.value = sub;
+    opt.textContent = name + ' (' + sub + ')';
+    sel.appendChild(opt);
+  }
+}
+
+function showLager() {
+  const sel = document.getElementById('lager-select');
+  const div = document.getElementById('lager-body');
+  const wh  = sel.value;
+  if (!wh || !S.ml?.i) { div.innerHTML = ''; return; }
+  track('lager_wh', { wh });
+
+  const rows = Object.entries(S.ml.i)
+    .filter(([, e]) => e.l?.[wh])
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([item, e]) => {
+      const loc   = e.l[wh];
+      const cls   = ageClass(item, wh);
+      const price = loc.qoh > 0 && loc.v != null
+        ? (loc.v / loc.qoh).toFixed(2)
+        : '—';
+      return `<tr class="${cls} row-link" onclick="goToSearch('${item}')"><td>${item}</td><td style="font-size:12px">${e.n}</td><td style="text-align:center">${loc.qoh}</td><td style="text-align:center">${loc.min}</td><td style="text-align:right">${price}</td></tr>`;
+    }).join('');
+
+  div.innerHTML = rows
+    ? `<table class="rtable">
+        <thead><tr><th>Number</th><th>Description</th><th style="text-align:center">QOH</th><th style="text-align:center">MIN</th><th style="text-align:right">Price/Unit</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`
+    : '<p style="color:var(--muted);font-size:13px">No items for this warehouse.</p>';
+}
+
+function goToSearch(item) {
+  document.getElementById('srch-inp').value = item;
+  showPage('suche');
+  doSearch();
+}
+
+function goToLager(sub) {
+  const sel = document.getElementById('lager-select');
+  if (sel) sel.value = sub;
+  showPage('lager');
+  showLager();
+}
+
+// ── FILE LOAD ────────────────────────────────────────────────────────────────
+async function onFileLoad(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const msg = document.getElementById('load-msg');
+  msg.textContent = 'Loading …';
+  await _loadXlsx(await file.arrayBuffer(), file.name, msg);
+  input.value = '';
+}
+
+async function _loadXlsx(buf, filename, msg) {
+  try {
+    const wb  = XLSX.read(buf, { type: 'array' });
+
+    // Find inventory sheet
+    const wsName = wb.SheetNames.find(n => n.toLowerCase().includes('fnd_gfm'))
+                   || wb.SheetNames[0];
+    const ws  = wb.Sheets[wsName];
+    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+    const hdr  = raw[0].map(h => String(h).trim());
+    const iTag = hdr.indexOf('Tag');
+    const iItm = hdr.indexOf('Item');
+    const iBez = hdr.indexOf('Bezeichnung');
+    const iSub = hdr.indexOf('Subinventory');
+
+    if (iItm < 0) throw new Error('Column "Item" not found – wrong file?');
+
+    S.inv = [];
+    for (let r = 1; r < raw.length; r++) {
+      const itm = String(raw[r][iItm] || '').trim();
+      if (!itm) continue;
+      S.inv.push({
+        tag:  String(raw[r][iTag] || '').trim(),
+        item: itm,
+        bez:  String(raw[r][iBez] || '').trim(),
+        sub:  String(raw[r][iSub] || '').trim(),
+        row:  r,
+      });
+    }
+
+    // Extract warehouse from filename  "Inventory CHU.8678 Edubook.xlsx"
+    const m = filename.match(/CHU\.\d+/i);
+    S.wh     = m ? m[0].toUpperCase() : null;
+    S.whName = filename
+                 .replace(/^Inventory\s+/i, '')
+                 .replace(/CHU\.\d+\s*/i, '')
+                 .replace(/\.xlsx?$/i, '')
+                 .trim();
+    S.fname   = filename;
+    S.fdata   = buf;
+    S.fdataB64 = bufToB64(buf);
+    S.scanned  = {};
+
+    saveSession();
+    showScanCard();
+    updateUI();
+    if (msg) msg.textContent = '';
+    track('inv_loaded', { wh: S.wh || '', v: S.inv?.length || 0 });
+
+  } catch (e) {
+    if (msg) msg.textContent = 'Error: ' + e.message;
+  }
+}
+
+function showScanCard() {
+  document.getElementById('load-card').classList.add('hidden');
+  document.getElementById('scan-card').classList.remove('hidden');
+  document.getElementById('merge-link').style.display = '';
+}
+
+// ── UI UPDATE ────────────────────────────────────────────────────────────────
+function updateUI() {
+  if (!S.inv) return;
+  const total = S.inv.length;
+  let totalQoh = 0, scannedQoh = 0;
+  for (const i of S.inv) {
+    const sc  = S.scanned[i.item] || 0;
+    const qoh = S.ml?.i?.[i.item]?.l?.[S.wh]?.qoh ?? null;
+    if (qoh !== null) {
+      totalQoh   += qoh;
+      scannedQoh += Math.min(sc, qoh);
+    }
+  }
+
+  document.getElementById('pfill-stk').style.width = totalQoh ? (scannedQoh / totalQoh * 100) + '%' : '0%';
+  document.getElementById('ptext-stk').textContent = expertMode
+    ? (totalQoh ? `${scannedQoh} of ${totalQoh} units in stock` : '—')
+    : '';
+
+  const infoEl = document.getElementById('inv-info-text');
+  if (infoEl) infoEl.textContent = S.wh ? `${S.wh}  ·  ${S.whName || ''}` : '—';
+
+  const subject = S.fname ? S.fname.replace(/\.xlsx?$/i, '') : '—';
+  const subEl = document.getElementById('share-subject-normal');
+  if (subEl) subEl.textContent = subject;
+  const siEl = document.getElementById('share-info-normal');
+  if (siEl) siEl.classList.toggle('hidden', !S.fname);
+
+  document.getElementById('merge-warn')?.classList.toggle('hidden',
+    JSON.stringify(S.scanned).length < 4000);
+
+  renderNormalFinish();
+}
+
+// ── SOUND + HAPTIC ────────────────────────────────────────────────────────────
+function updateSoundButtons() {
+  document.querySelectorAll('.btn-sound').forEach(btn => {
+    btn.textContent = soundOn ? '🔔 Sound on' : '🔕 Sound off';
+    btn.classList.toggle('off', !soundOn);
+  });
+}
+
+function toggleSound() {
+  soundOn = !soundOn;
+  localStorage.setItem('inventur_sound', soundOn ? '1' : '0');
+  // AudioContext beim ersten Einschalten via User-Gesture anlegen (iOS-Pflicht)
+  if (soundOn && !audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {}
+  }
+  updateSoundButtons();
+}
+
+function playBeep() {
+  if (!soundOn) return;
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const osc  = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.frequency.value = 1320;
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(0.4, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.12);
+    osc.start(audioCtx.currentTime);
+    osc.stop(audioCtx.currentTime + 0.12);
+  } catch (_) {}
+}
+
+// ── MAIN SCANNER ─────────────────────────────────────────────────────────────
+async function toggleScan() {
+  const modal = document.getElementById('scan-modal');
+  if (modal.classList.contains('open')) { stopScan(); return; }
+
+  modal.classList.add('open');
+  document.getElementById('btn-cam').textContent = '⏹ Stop Scanning';
+
+  // AudioContext vorab anlegen (User-Gesture vorhanden)
+  if (soundOn && !audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {}
+  }
+
+  if (!reader1D) reader1D = new ZXing.BrowserMultiFormatReader();
+  try {
+    await reader1D.decodeFromConstraints(
+      { video: { facingMode: { ideal: 'environment' } } },
+      'video-main',
+      (result) => { if (result) handleCode(result.getText()); }
+    );
+  } catch (e) {
+    alert('Camera error: ' + e.message);
+    stopScan();
+  }
+}
+
+function stopScan() {
+  if (reader1D) { try { reader1D.reset(); } catch (_) {} }
+  document.getElementById('scan-modal').classList.remove('open');
+  document.getElementById('btn-cam').textContent = '📷 Start Scanning';
+}
+
+function handleCode(code) {
+  // Nur 7- oder 10-stellige Zahlen akzeptieren
+  if (!/^(\d{7}|\d{10})$/.test(code)) return;
+
+  const now = Date.now();
+  if (code === lastCode && now - lastCodeTime < 2500) return;
+  if (document.getElementById('qty-modal').classList.contains('open')) return;
+  lastCode = code; lastCodeTime = now;
+
+  // Scanner schliessen, danach automatisch wieder öffnen
+  scannerAutoReopen = true;
+  stopScan();
+
+  const invItem = S.inv?.find(i => i.item === code);
+  const name = invItem?.bez || S.ml?.i?.[code]?.n || '';
+  document.getElementById('scan-hint').textContent = name ? `${code}  ·  ${name}` : `Detected: ${code}`;
+  playBeep();
+  if (soundOn && navigator.vibrate) navigator.vibrate(60);
+  openQtyModal(code);
+}
+
+// ── MANUAL ADD ───────────────────────────────────────────────────────────────
+function onManualAdd() {
+  const inp  = document.getElementById('manual-inp');
+  const code = inp.value.trim();
+  if (!code) return;
+  inp.value = '';
+  openQtyModal(code);
+}
+
+// ── QUANTITY MODAL ────────────────────────────────────────────────────────────
+function openQtyModal(code) {
+  pendingCode = code;
+  const invItem = S.inv?.find(i => i.item === code);
+  const name    = invItem?.bez || S.ml?.i?.[code]?.n || '(not in inventory list)';
+  const current = S.scanned[code] || 0;
+
+  let minV = '—', qohV = '—';
+  const mlEntry = S.ml?.i?.[code];
+  if (mlEntry && S.wh && mlEntry.l[S.wh]) {
+    minV = mlEntry.l[S.wh].min;
+    qohV = mlEntry.l[S.wh].qoh;
+  }
+
+  document.getElementById('m-nr').textContent    = code;
+  document.getElementById('m-name').textContent  = name;
+  document.getElementById('m-cur').textContent   = current;
+  document.getElementById('m-min').textContent   = minV;
+  document.getElementById('m-qoh').textContent   = qohV;
+  document.getElementById('qty-val').value       = 1;
+  refreshTotal();
+  document.getElementById('qty-info-grid').classList.toggle('expert', expertMode);
+
+  document.getElementById('qty-modal').classList.add('open');
+}
+
+function adjQty(delta) {
+  const inp = document.getElementById('qty-val');
+  inp.value = Math.max(1, (parseInt(inp.value) || 1) + delta);
+  refreshTotal();
+}
+
+function refreshTotal() {
+  const add     = Math.max(1, parseInt(document.getElementById('qty-val').value) || 1);
+  const current = S.scanned[pendingCode] || 0;
+  document.getElementById('m-total').textContent = current + add;
+}
+
+function confirmQty() {
+  if (!pendingCode) return;
+  const add = Math.max(1, parseInt(document.getElementById('qty-val').value) || 1);
+  S.scanned[pendingCode] = (S.scanned[pendingCode] || 0) + add;
+  saveSession();
+  updateUI();
+  const reopen = scannerAutoReopen;
+  scannerAutoReopen = false;
+  closeQtyModal();
+  if (reopen) toggleScan();   // Scanner automatisch wieder öffnen
+}
+
+function closeQtyModal() {
+  scannerAutoReopen = false;  // bei Abbrechen: kein Auto-Reopen
+  document.getElementById('qty-modal').classList.remove('open');
+  pendingCode = null;
+  lastCode    = null;
+}
+
+// ── PART SEARCH ──────────────────────────────────────────────────────────────
+function doSearch() {
+  const q   = document.getElementById('srch-inp').value.trim();
+  const div = document.getElementById('srch-result');
+  if (!q) return;
+
+  if (!S.ml?.i) {
+    div.innerHTML = '<p style="color:var(--red)">Masterlist not loaded.</p>';
+    return;
+  }
+
+  const entry = S.ml.i[q];
+  if (!entry) {
+    div.innerHTML = `<p style="color:var(--muted)">No entry found for <strong>${q}</strong>.</p>`;
+    return;
+  }
+  track('search_used');
+
+  const wmap = S.ml._w || {};
+  const rows = Object.entries(entry.l || {})
+    .filter(([sub]) => isWhVisible(sub))
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([sub, loc]) => {
+      const full  = wmap[sub] || sub;
+      const short = full.replace(/\d{4,5}\s+/, '').replace(/\s*CSP\S+.*$/, '').trim();
+      const cls   = ageClass(q, sub);
+      return `<tr class="${cls} row-link" onclick="goToLager('${sub}')">
+        <td><strong>${sub}</strong></td>
+        <td>${short}</td>
+        <td style="text-align:center;font-weight:700">${loc.qoh}</td>
+        <td style="text-align:center">${loc.min}</td>
+      </tr>`;
+    }).join('');
+
+  div.innerHTML = `
+    <div style="margin-bottom:12px">
+      <strong style="font-size:16px">${q}</strong><br>
+      <span style="color:var(--muted);font-size:13px">${entry.n}</span>
+    </div>
+    <table class="rtable">
+      <thead><tr>
+        <th>INV_LOC</th><th>Name</th>
+        <th style="text-align:center">QOH</th>
+        <th style="text-align:center">MIN</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+async function startSearchScan() {
+  const modal = document.getElementById('ss-modal');
+  modal.classList.add('open');
+
+  // AudioContext vorab anlegen (User-Gesture vorhanden)
+  if (soundOn && !audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {}
+  }
+
+  if (!readerSS) readerSS = new ZXing.BrowserMultiFormatReader();
+  try {
+    await readerSS.decodeFromConstraints(
+      { video: { facingMode: { ideal: 'environment' } } },
+      'video-ss',
+      (result) => {
+        if (!result) return;
+        const code = result.getText();
+        if (!/^(\d{7}|\d{10})$/.test(code)) return;
+        readerSS.reset();
+        modal.classList.remove('open');
+        playBeep();
+        if (soundOn && navigator.vibrate) navigator.vibrate(60);
+        document.getElementById('srch-inp').value = code;
+        doSearch();
+      });
+  } catch (e) {
+    alert('Camera error: ' + e.message);
+    modal.classList.remove('open');
+  }
+}
+
+function closeSSModal() {
+  if (readerSS) { try { readerSS.reset(); } catch (_) {} }
+  document.getElementById('ss-modal').classList.remove('open');
+}
+
+// ── QR EXPORT ────────────────────────────────────────────────────────────────
+async function showExportQR() {
+  const container = document.getElementById('qr-container');
+  const msg       = document.getElementById('qr-msg');
+  container.innerHTML = '';
+  container.classList.add('hidden');
+  msg.style.color = 'var(--muted)';
+  msg.textContent = 'Generating …';
+
+  if (typeof QRCode === 'undefined') {
+    msg.style.color = 'var(--red)';
+    msg.textContent = 'QR library not loaded – check internet and reload page.';
+    return;
+  }
+
+  const json = JSON.stringify(S.scanned || {});
+  let payload;
+
+  try {
+    const cs     = new CompressionStream('gzip');
+    const writer = cs.writable.getWriter();
+    writer.write(new TextEncoder().encode(json));
+    writer.close();
+    const compressed = await new Response(cs.readable).arrayBuffer();
+    payload = 'GZ:' + bufToB64(compressed);
+  } catch (_) {
+    payload = 'RAW:' + btoa(unescape(encodeURIComponent(json)));
+  }
+
+  const size   = payload.length;
+  const nItems = Object.keys(S.scanned || {}).length;
+
+  if (size > 2953) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = `Too large (${size} chars, max. 2953) – share file instead.`;
+    return;
+  }
+
+  try {
+    const qrSize = Math.min(280, window.innerWidth - 60);
+    new QRCode(container, {
+      text:         payload,
+      width:        qrSize,
+      height:       qrSize,
+      correctLevel: QRCode.CorrectLevel.M,
+    });
+    container.classList.remove('hidden');
+    msg.style.color = 'var(--muted)';
+    msg.textContent = `${nItems} items · ${size} chars`;
+  } catch (e) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = 'Error: ' + e.message;
+  }
+}
+
+// ── QR IMPORT ────────────────────────────────────────────────────────────────
+async function startQRImport() {
+  const modal = document.getElementById('qr-modal');
+  modal.classList.add('open');
+
+  if (!readerQR) readerQR = new ZXing.BrowserMultiFormatReader();
+  try {
+    await readerQR.decodeFromConstraints(
+      { video: { facingMode: { ideal: 'environment' } } },
+      'video-qr',
+      async (result) => {
+        if (!result) return;
+        readerQR.reset();
+        modal.classList.remove('open');
+        await mergeQRPayload(result.getText());
+      });
+  } catch (e) {
+    alert('Camera error: ' + e.message);
+    modal.classList.remove('open');
+  }
+}
+
+async function mergeQRPayload(text) {
+  try {
+    let jsonStr;
+    if (text.startsWith('GZ:')) {
+      const bytes = b64ToBuffer(text.slice(3));
+      const ds    = new DecompressionStream('gzip');
+      const w     = ds.writable.getWriter();
+      w.write(new Uint8Array(bytes)); w.close();
+      jsonStr = await new Response(ds.readable).text();
+    } else if (text.startsWith('RAW:')) {
+      jsonStr = decodeURIComponent(escape(atob(text.slice(4))));
+    } else {
+      jsonStr = text;
+    }
+
+    const imported = JSON.parse(jsonStr);
+    let n = 0;
+    for (const [item, qty] of Object.entries(imported)) {
+      S.scanned[item] = (S.scanned[item] || 0) + qty;
+      n++;
+    }
+    saveSession();
+    updateUI();
+    track('merge_done', { v: n });
+    alert(`${n} items added from colleague!`);
+  } catch (e) {
+    alert('QR error: ' + e.message);
+  }
+}
+
+function closeQRModal() {
+  if (readerQR) { try { readerQR.reset(); } catch (_) {} }
+  document.getElementById('qr-modal').classList.remove('open');
+}
+
+// ── MERGE QR CLEAR ────────────────────────────────────────────────────────────
+function clearMergeQR() {
+  const c = document.getElementById('qr-container');
+  c.innerHTML = '';
+  c.classList.add('hidden');
+  document.getElementById('qr-msg').textContent = '';
+}
+
+// ── AGE LEGEND ────────────────────────────────────────────────────────────────
+function openAgeModal()  { document.getElementById('age-modal').classList.add('open'); }
+function closeAgeModal() { document.getElementById('age-modal').classList.remove('open'); }
+
+// ── WAREHOUSE FILTER ──────────────────────────────────────────────────────────
+function openWhFilter() {
+  if (!S.ml?._w) return;
+  const entries = Object.entries(S.ml._w).sort((a, b) => a[1].localeCompare(b[1]));
+  document.getElementById('wh-filter-list').innerHTML = entries.map(([sub, name]) => {
+    const checked = isWhVisible(sub) ? 'checked' : '';
+    const short = name.replace(/\d{4,5}\s+/, '').replace(/\s*CSP\S+.*$/, '').trim();
+    return `<label style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer">
+      <input type="checkbox" data-sub="${sub}" ${checked} style="width:18px;height:18px;flex-shrink:0">
+      <span style="flex:1"><strong style="font-size:13px">${sub}</strong><br>
+      <span style="font-size:12px;color:var(--muted)">${short}</span></span>
+    </label>`;
+  }).join('');
+  document.getElementById('wh-filter-modal').classList.add('open');
+}
+
+function closeWhFilter() {
+  const checkboxes = document.querySelectorAll('#wh-filter-list input[type=checkbox]');
+  const selected = [...checkboxes].filter(cb => cb.checked).map(cb => cb.dataset.sub);
+  const total = Object.keys(S.ml?._w || {}).length;
+
+  if (selected.length === total) {
+    whFilter = null;
+    localStorage.removeItem(WH_FILTER_KEY);
+  } else {
+    whFilter = new Set(selected);
+    localStorage.setItem(WH_FILTER_KEY, JSON.stringify(selected));
+  }
+
+  document.getElementById('wh-filter-modal').classList.remove('open');
+  initLager();
+  const sel = document.getElementById('lager-select');
+  if (sel.value && !isWhVisible(sel.value)) { sel.value = ''; showLager(); }
+  const q = document.getElementById('srch-inp').value.trim();
+  if (q) doSearch();
+}
+
+function whFilterAll()  { document.querySelectorAll('#wh-filter-list input[type=checkbox]').forEach(cb => cb.checked = true); }
+function whFilterNone() { document.querySelectorAll('#wh-filter-list input[type=checkbox]').forEach(cb => cb.checked = false); }
+
+// ── FINISH TAB ────────────────────────────────────────────────────────────────
+function renderFinish() {
+  const div = document.getElementById('finish-body');
+  if (!S.inv) {
+    div.innerHTML = '<p style="color:var(--muted)">No inventory loaded.</p>';
+    return;
+  }
+
+  // Jedes Teil: Soll = QOH aus Masterlist (Fallback: 1), Deficit = max(0, Soll − Gezählt)
+  const extra = Object.entries(S.scanned)
+                  .filter(([k]) => !S.inv.find(i => i.item === k));
+
+  const scannedStk = Object.values(S.scanned).reduce((s, v) => s + v, 0);
+  let totalDeficit = 0;
+  const missingItems = [];
+  const overItems   = [];
+
+  for (const i of S.inv) {
+    const sc     = S.scanned[i.item] || 0;
+    const qoh    = S.ml?.i?.[i.item]?.l?.[S.wh]?.qoh ?? null;
+    const target = qoh !== null ? qoh : 1;
+    const deficit = Math.max(0, target - sc);
+    if (deficit > 0) {
+      totalDeficit += deficit;
+      missingItems.push({ ...i, sc, qoh, deficit });
+    } else if (qoh !== null && sc > qoh) {
+      overItems.push({ ...i, sc, qoh, excess: sc - qoh });
+    }
+  }
+
+  const extraStk = extra.reduce((s, [, v]) => s + v, 0);
+
+  const missRows = missingItems.map(i => {
+    const defCell = expertMode
+      ? (i.qoh !== null
+          ? `<td style="text-align:center;font-weight:700;color:var(--red)">${i.deficit}</td>`
+          : `<td style="text-align:center;color:var(--muted)">—</td>`)
+      : '';
+    const scText = i.sc > 0 ? ` <span style="color:var(--orange);font-size:11px">(${i.sc} cnt.)</span>` : '';
+    return `<tr class="${ageClass(i.item, S.wh)}"><td>${i.item}${scText}</td><td style="font-size:12px">${i.bez}</td>${defCell}</tr>`;
+  }).join('');
+
+  const xtraRows = extra.map(([k, v]) => {
+    const bez = S.ml?.i?.[k]?.n || '';
+    return `<tr class="${ageClass(k, S.wh)}"><td>${k}</td><td style="font-size:12px">${bez}</td><td style="text-align:center">${v}</td></tr>`;
+  }).join('');
+
+  const overRows = overItems.map(i =>
+    `<tr class="${ageClass(i.item, S.wh)}"><td>${i.item}</td><td style="font-size:12px">${i.bez}</td><td style="text-align:center">${i.qoh}</td><td style="text-align:center;font-weight:700;color:var(--blue)">${i.sc}</td><td style="text-align:center;font-weight:700;color:var(--orange)">${i.excess}</td></tr>`
+  ).join('');
+
+  // Gezählte Artikel: alle gescannten Positionen (Inventur + Extra), editierbar
+  const inpStyle = 'width:58px;text-align:center;border:1px solid var(--border);border-radius:6px;padding:2px 4px;font-size:14px';
+  const scannedRows = [
+    ...S.inv
+      .filter(i => (S.scanned[i.item] || 0) > 0)
+      .map(i => ({
+        item: i.item,
+        bez:  i.bez || S.ml?.i?.[i.item]?.n || '',
+        qoh:  S.ml?.i?.[i.item]?.l?.[S.wh]?.qoh ?? null,
+        sc:   S.scanned[i.item],
+      })),
+    ...extra.map(([k, v]) => ({
+      item: k,
+      bez:  S.ml?.i?.[k]?.n || '',
+      qoh:  null,
+      sc:   v,
+    })),
+  ].map(i => {
+    const qohCell = expertMode
+      ? (i.qoh !== null
+          ? `<td style="text-align:center">${i.qoh}</td>`
+          : `<td style="text-align:center;color:var(--muted)">—</td>`)
+      : '';
+    return `<tr class="${ageClass(i.item, S.wh)}">
+      <td>${i.item}</td>
+      <td style="font-size:12px">${i.bez}</td>
+      ${qohCell}
+      <td style="text-align:center"><input type="number" min="0" value="${i.sc}" style="${inpStyle}" onchange="updateScanned('${i.item}',this.value)"></td>
+    </tr>`;
+  }).join('');
+
+  div.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;text-align:center">
+      <div><div style="font-size:28px;font-weight:800;color:var(--green)">${scannedStk}</div><div style="font-size:11px;color:var(--muted)">Counted</div></div>
+      <div><div style="font-size:28px;font-weight:800;color:var(--red)">${totalDeficit}</div><div style="font-size:11px;color:var(--muted)">Missing</div></div>
+      <div><div style="font-size:28px;font-weight:800;color:var(--orange)">${extraStk}</div><div style="font-size:11px;color:var(--muted)">Extra</div></div>
+    </div>
+
+    ${scannedRows ? `
+    <details style="margin-top:8px">
+      <summary style="font-weight:600;color:var(--green)">Counted Items (${Object.keys(S.scanned).length} pos.)</summary>
+      <table class="rtable" style="margin-top:8px">
+        <thead><tr><th>Item No.</th><th>Description</th>${expertMode ? '<th style="text-align:center">QOH</th>' : ''}<th style="text-align:center">Counted</th></tr></thead>
+        <tbody>${scannedRows}</tbody>
+      </table>
+    </details>` : ''}
+
+    ${missingItems.length ? `
+    <details style="margin-top:8px">
+      <summary style="font-weight:600;color:var(--red)">Missing Items (${missingItems.length} pos. · ${totalDeficit} units)</summary>
+      <table class="rtable" style="margin-top:8px">
+        <thead><tr><th>Item No.</th><th>Description</th>${expertMode ? '<th style="text-align:center">still missing</th>' : ''}</tr></thead>
+        <tbody>${missRows}</tbody>
+      </table>
+    </details>` : ''}
+
+    ${expertMode && overItems.length ? `
+    <details style="margin-top:8px">
+      <summary style="font-weight:600;color:var(--blue)">Overstock (${overItems.length} pos.)</summary>
+      <table class="rtable" style="margin-top:8px">
+        <thead><tr><th>Item No.</th><th>Description</th><th style="text-align:center">QOH</th><th style="text-align:center">Counted</th><th style="text-align:center">Excess</th></tr></thead>
+        <tbody>${overRows}</tbody>
+      </table>
+    </details>` : ''}
+
+    ${extra.length ? `
+    <details style="margin-top:8px">
+      <summary style="font-weight:600;color:var(--orange)">Extra Items (${extra.length} pos. · ${extraStk} units)</summary>
+      <table class="rtable" style="margin-top:8px">
+        <thead><tr><th>Item No.</th><th>Description</th><th>Qty</th></tr></thead>
+        <tbody>${xtraRows}</tbody>
+      </table>
+    </details>` : ''}
+  `;
+}
+
+function renderNormalFinish() {
+  const div = document.getElementById('normal-finish-body');
+  if (!div || !S.inv) { if (div) div.innerHTML = ''; return; }
+
+  const extra = Object.entries(S.scanned)
+    .filter(([k]) => !S.inv.find(i => i.item === k));
+
+  const inpStyle = 'width:58px;text-align:center;border:1px solid var(--border);border-radius:6px;padding:2px 4px;font-size:14px';
+  const countedRows = [
+    ...S.inv
+      .filter(i => (S.scanned[i.item] || 0) > 0)
+      .map(i => ({
+        item: i.item,
+        bez:  i.bez || S.ml?.i?.[i.item]?.n || '',
+        qoh:  S.ml?.i?.[i.item]?.l?.[S.wh]?.qoh ?? null,
+        sc:   S.scanned[i.item],
+      })),
+    ...extra.map(([k, v]) => ({
+      item: k,
+      bez:  S.ml?.i?.[k]?.n || '',
+      qoh:  null,
+      sc:   v,
+    })),
+  ].map(i => {
+    const qohCell = expertMode
+      ? (i.qoh !== null
+          ? `<td style="text-align:center">${i.qoh}</td>`
+          : `<td style="text-align:center;color:var(--muted)">—</td>`)
+      : '';
+    return `<tr class="${ageClass(i.item, S.wh)}">
+      <td>${i.item}</td>
+      <td style="font-size:12px">${i.bez}</td>
+      ${qohCell}
+      <td style="text-align:center"><input type="number" min="0" value="${i.sc}" style="${inpStyle}" onchange="updateScanned('${i.item}',this.value)"></td>
+    </tr>`;
+  }).join('');
+
+  const hint = document.getElementById('age-hint-main');
+  if (hint) hint.style.display = countedRows ? 'block' : 'none';
+
+  let html = countedRows
+    ? `<details open style="margin-bottom:14px">
+        <summary style="font-weight:600;color:var(--green)">Counted Items (${Object.keys(S.scanned).length} pos.)</summary>
+        <table class="rtable" style="margin-top:8px">
+          <thead><tr><th>Item No.</th><th>Description</th>${expertMode ? '<th style="text-align:center">QOH</th>' : ''}<th style="text-align:center">Counted</th></tr></thead>
+          <tbody>${countedRows}</tbody>
+        </table>
+      </details>`
+    : '<p style="color:var(--muted);font-size:13px;margin:8px 0">No items counted yet.</p>';
+
+  if (expertMode) {
+    const missingItems = [], overItems = [];
+    let totalDeficit = 0;
+    for (const i of S.inv) {
+      const sc      = S.scanned[i.item] || 0;
+      const qoh     = S.ml?.i?.[i.item]?.l?.[S.wh]?.qoh ?? null;
+      const target  = qoh !== null ? qoh : 1;
+      const deficit = Math.max(0, target - sc);
+      if (deficit > 0) { totalDeficit += deficit; missingItems.push({ ...i, sc, qoh, deficit }); }
+      else if (qoh !== null && sc > qoh) { overItems.push({ ...i, sc, qoh, excess: sc - qoh }); }
+    }
+
+    if (missingItems.length) {
+      const missRows = missingItems.map(i => {
+        const scText = i.sc > 0 ? ` <span style="color:var(--orange);font-size:11px">(${i.sc} cnt.)</span>` : '';
+        const defCell = i.qoh !== null
+          ? `<td style="text-align:center;font-weight:700;color:var(--red)">${i.deficit}</td>`
+          : `<td style="text-align:center;color:var(--muted)">—</td>`;
+        return `<tr class="${ageClass(i.item, S.wh)}"><td>${i.item}${scText}</td><td style="font-size:12px">${i.bez}</td>${defCell}</tr>`;
+      }).join('');
+      html += `<details style="margin-bottom:14px">
+        <summary style="font-weight:600;color:var(--red)">Missing Items (${missingItems.length} pos. · ${totalDeficit} units)</summary>
+        <table class="rtable" style="margin-top:8px">
+          <thead><tr><th>Item No.</th><th>Description</th><th style="text-align:center">still missing</th></tr></thead>
+          <tbody>${missRows}</tbody>
+        </table>
+      </details>`;
+    }
+
+    if (overItems.length) {
+      const overRows = overItems.map(i =>
+        `<tr class="${ageClass(i.item, S.wh)}"><td>${i.item}</td><td style="font-size:12px">${i.bez}</td><td style="text-align:center">${i.qoh}</td><td style="text-align:center;font-weight:700;color:var(--blue)">${i.sc}</td><td style="text-align:center;font-weight:700;color:var(--orange)">${i.excess}</td></tr>`
+      ).join('');
+      html += `<details style="margin-bottom:14px">
+        <summary style="font-weight:600;color:var(--blue)">Overstock (${overItems.length} pos.)</summary>
+        <table class="rtable" style="margin-top:8px">
+          <thead><tr><th>Item No.</th><th>Description</th><th style="text-align:center">QOH</th><th style="text-align:center">Counted</th><th style="text-align:center">Excess</th></tr></thead>
+          <tbody>${overRows}</tbody>
+        </table>
+      </details>`;
+    }
+
+    if (extra.length) {
+      const extraStk = extra.reduce((s, [, v]) => s + v, 0);
+      const xtraRows = extra.map(([k, v]) =>
+        `<tr class="${ageClass(k, S.wh)}"><td>${k}</td><td style="font-size:12px">${S.ml?.i?.[k]?.n || ''}</td><td style="text-align:center">${v}</td></tr>`
+      ).join('');
+      html += `<details style="margin-bottom:14px">
+        <summary style="font-weight:600;color:var(--orange)">Extra Items (${extra.length} pos. · ${extraStk} units)</summary>
+        <table class="rtable" style="margin-top:8px">
+          <thead><tr><th>Item No.</th><th>Description</th><th>Qty</th></tr></thead>
+          <tbody>${xtraRows}</tbody>
+        </table>
+      </details>`;
+    }
+  }
+
+  div.innerHTML = html;
+}
+
+function updateScanned(item, val) {
+  const n = Math.max(0, parseInt(val) || 0);
+  if (n === 0) delete S.scanned[item];
+  else S.scanned[item] = n;
+  saveSession();
+  updateUI();
+}
+
+// ── XLSX AUFBEREITEN (gemeinsam für Download + Share) ─────────────────────────
+async function _buildFilledXlsx() {
+  if (!S.fdata) {
+    if (!S.fdataB64) throw new Error('Original file not available. Please reload XLSX.');
+    S.fdata = b64ToBuffer(S.fdataB64);
+  }
+  const wb     = XLSX.read(S.fdata, { type: 'array' });
+  const wsName = wb.SheetNames.find(n => n.toLowerCase().includes('fnd_gfm'))
+                 || wb.SheetNames[0];
+  const ws     = wb.Sheets[wsName];
+  const raw    = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  const hdr    = raw[0].map(h => String(h).trim());
+  const iItm   = hdr.indexOf('Item');
+  const iGez   = hdr.indexOf('Gezählt');
+  const iBez   = hdr.indexOf('Bezeichnung');
+
+  if (iGez < 0) throw new Error('"Gezählt" column not found.');
+
+  for (let r = 1; r < raw.length; r++) {
+    const itm = String(raw[r][iItm] || '').trim();
+    if (!itm) continue;
+    const count = S.scanned[itm] || 0;
+    ws[XLSX.utils.encode_cell({ r, c: iGez })] = { t: 'n', v: count };
+    if (iBez >= 0) {
+      const bez = S.ml?.i?.[itm]?.n || String(raw[r][iBez] || '');
+      ws[XLSX.utils.encode_cell({ r, c: iBez })] = { t: 's', v: bez };
+    }
+  }
+
+  const extra = Object.entries(S.scanned).filter(([k]) => !S.inv?.find(i => i.item === k));
+  let lastR = raw.length;
+  for (const [item, count] of extra) {
+    const newRow = Array(hdr.length).fill('');
+    newRow[iItm] = item;
+    newRow[iGez] = count;
+    if (iBez >= 0) newRow[iBez] = S.ml?.i?.[item]?.n || '';
+    XLSX.utils.sheet_add_aoa(ws, [newRow], { origin: lastR });
+    lastR++;
+  }
+  ws['!ref'] = XLSX.utils.encode_range({ r: 0, c: 0 }, { r: lastR - 1, c: hdr.length - 1 });
+
+  const outName = (S.fname || 'Inventory').replace(/\.xlsx?$/i, '') + '_filled.xlsx';
+  return { wb, outName };
+}
+
+// ── DOWNLOAD XLSX ─────────────────────────────────────────────────────────────
+async function downloadXLSX() {
+  try {
+    const { wb, outName } = await _buildFilledXlsx();
+    XLSX.writeFile(wb, outName);
+    track('inv_exported', { wh: S.wh || '', v: Object.keys(S.scanned).length });
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+// ── SHARE XLSX ────────────────────────────────────────────────────────────────
+async function shareXLSX() {
+  navigator.clipboard?.writeText('servicematerialscontrolling@canon.ch').catch(() => {});
+  track('inv_exported', { wh: S.wh || '', v: Object.keys(S.scanned).length });
+  try {
+    const { wb, outName } = await _buildFilledXlsx();
+    const data = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    const file = new File([data], outName, {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    if (navigator.share) {
+      try {
+        await navigator.share({ files: [file] });
+      } catch (e) {
+        if (e.name !== 'AbortError') XLSX.writeFile(wb, outName);
+      }
+    } else {
+      XLSX.writeFile(wb, outName);
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') alert('Error: ' + e.message);
+  }
+}
+
+// ── RESET ────────────────────────────────────────────────────────────────────
+function resetSession() {
+  if (!confirm('Delete current inventory and start fresh?')) return;
+  stopScan();
+  S.inv = S.fdata = S.fdataB64 = S.fname = S.wh = S.whName = null;
+  S.scanned = {};
+  localStorage.removeItem(SESSION_KEY);
+  document.getElementById('load-card').classList.remove('hidden');
+  document.getElementById('scan-card').classList.add('hidden');
+  document.getElementById('merge-link').style.display = 'none';
+  showPage('inv');
+}
+
+// ── SESSION PERSIST ───────────────────────────────────────────────────────────
+function saveSession() {
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      inv:      S.inv,
+      wh:       S.wh,
+      whName:   S.whName,
+      fname:    S.fname,
+      fdataB64: S.fdataB64,
+      scanned:  S.scanned,
+    }));
+  } catch (_) {}
+}
+
+// ── UTILS ─────────────────────────────────────────────────────────────────────
+function bufToB64(buf) {
+  const bytes = new Uint8Array(buf);
+  let b = '';
+  for (let i = 0; i < bytes.length; i++) b += String.fromCharCode(bytes[i]);
+  return btoa(b);
+}
+
+function b64ToBuffer(b64) {
+  const bin  = atob(b64);
+  const buf  = new ArrayBuffer(bin.length);
+  const view = new Uint8Array(buf);
+  for (let i = 0; i < bin.length; i++) view[i] = bin.charCodeAt(i);
+  return buf;
+}
+
+// ── SERVICE WORKER ────────────────────────────────────────────────────────────
+// Neuer SW aktiviert sich automatisch (skipWaiting im Install-Handler).
+// controllerchange → Seite neu laden, Session bleibt via localStorage erhalten.
+let swRefreshing = false;
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js')
+    .catch(e => console.warn('SW registration failed:', e));
+
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!swRefreshing) { swRefreshing = true; location.reload(); }
+  });
+}
+</script>
+
+</body>
+</html>
