@@ -38,26 +38,16 @@ Use the **Sound** and **Haptic** toggles in the scan dialog for beep/vibration f
 
 To enter an item number manually, use the **Manual Entry** field below the scan button.
 
-### 3. Track progress
+### 3. Part Search →
 
-The progress bar and counters show:
+Tap **Part Search →** to look up any item by text or barcode scan.
+Shows which warehouses carry the part and their current stock levels.
 
-| Field | Meaning |
-|---|---|
-| Counted | Items fully accounted for |
-| Missing | Items still below target stock |
-| Extra | Scanned items not in the inventory list |
-
-### 4. Search
-
-Tap **Part Search** to look up any item by text or barcode scan.
-Shows item name, target stock (QOH) and already counted quantity.
-
-### 5. Warehouse overview
+### 4. Warehouse overview
 
 Tap **Warehouse Overview** to browse all items in any warehouse with their stock levels and age.
 
-### 6. Merge with a colleague
+### 5. Merge with a colleague
 
 When multiple people are counting simultaneously:
 
@@ -65,16 +55,10 @@ When multiple people are counting simultaneously:
 2. Person B: go to **Merge** → tap **Scan QR Code** → scan Person A's code
 3. The counts are merged (quantities added together)
 
-### 7. Finish
+### 6. Export
 
-Tap **Finish** for a summary with three collapsible lists:
+Once counting is done, the main page shows the list of all counted items.
 
-| List | Content |
-|---|---|
-| Counted Items | All scanned items with counted quantity (editable) |
-| Missing Items | Items whose counted quantity is below target stock |
-| Extra Items | Scanned items not in the inventory list |
+Tap **Download filled XLSX** to get the original inventory file filled in with the counted quantities, ready to send by email.
 
-**Correction:** In the "Counted Items" list, tap any quantity to edit it directly. The summary updates immediately.
-
-**Export:** Tap "Download filled XLSX" to get the original inventory file filled in with the counted quantities, ready to send by email.
+Tap **Start New Inventory** to reset and begin a new count.
