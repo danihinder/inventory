@@ -62,3 +62,16 @@ Once counting is done, the main page shows the list of all counted items.
 Tap **Download filled XLSX** to get the original inventory file filled in with the counted quantities, ready to send by email.
 
 Tap **Start New Inventory** to reset and begin a new count.
+
+
+<img width="30%" height="2036" alt="grafik" src="https://github.com/user-attachments/assets/2542d00f-db7b-4ce6-b180-b362411000bb" />
+<img width="30%" height="2286" alt="grafik" src="https://github.com/user-attachments/assets/82a19913-5d63-4421-96ca-e329ba42c420" />
+<img width="30%" height="2286" alt="grafik" src="https://github.com/user-attachments/assets/2fffacce-e33b-42c1-ac27-844ede6e4110" />
+<img width="30%" height="2286" alt="grafik" src="https://github.com/user-attachments/assets/2ad6863d-6a7d-4cf6-b15d-8cc07743e0f9" />
+<img width="30%" height="2226" alt="grafik" src="https://github.com/user-attachments/assets/a9d33fcb-b75b-4c09-95f1-1974d7a32f43" />
+
+
+
+
+
+
