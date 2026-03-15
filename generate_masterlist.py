@@ -18,6 +18,8 @@ import json
 import argparse
 import subprocess
 import datetime
+import time
+import socket
 from pathlib import Path
 from collections import defaultdict
 
@@ -93,24 +95,49 @@ def clean_location_name(raw: str) -> str:
     return name or raw
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Masterlist XLSX → JSON für Inventur-PWA')
-    parser.add_argument('--input', default=str(DEFAULT_INPUT),
-                        help='Pfad zur Masterlist-XLSX')
-    parser.add_argument('--out', default=str(DEFAULT_OUT),
-                        help='Ausgabepfad für masterlist.json')
-    parser.add_argument('--no-push', action='store_true',
-                        help='Kein automatischer Git-Commit + Push')
-    args = parser.parse_args()
+def has_internet(host='github.com', port=443, timeout=5) -> bool:
+    try:
+        socket.setdefaulttimeout(timeout)
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
+        return True
+    except OSError:
+        return False
 
-    input_path = Path(args.input)
-    out_path   = Path(args.out)
 
-    if not input_path.exists():
-        print(f"❌ Datei nicht gefunden: {input_path}")
-        print("   Bitte --input Pfad angeben oder Datei in den Standardpfad legen.")
-        sys.exit(1)
+def run_watch(input_path: Path, out_path: Path, no_push: bool, interval: int):
+    print(f"Überwache: {input_path}")
+    print(f"Prüfintervall: {interval}s  |  Ctrl+C zum Beenden.\n")
 
+    last_mtime = None
+
+    try:
+        while True:
+            if not input_path.exists():
+                print(f"[{datetime.datetime.now():%H:%M:%S}] Datei nicht gefunden: {input_path}", flush=True)
+                time.sleep(interval)
+                continue
+
+            mtime = os.path.getmtime(str(input_path))
+
+            if last_mtime is None:
+                last_mtime = mtime  # Startzustand merken, nicht sofort konvertieren
+            elif mtime != last_mtime:
+                print(f"\n[{datetime.datetime.now():%H:%M:%S}] Dateiänderung erkannt.", flush=True)
+                last_mtime = mtime
+
+                if not no_push:
+                    while not has_internet():
+                        print(f"[{datetime.datetime.now():%H:%M:%S}] Kein Internet – warte 60s ...", flush=True)
+                        time.sleep(60)
+
+                convert(input_path, out_path, no_push)
+
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\nWatcher beendet.")
+
+
+def convert(input_path: Path, out_path: Path, no_push: bool):
     print(f"Lese: {input_path.name} ...", flush=True)
 
     wb = openpyxl.load_workbook(str(input_path), read_only=True, data_only=True)
@@ -179,15 +206,14 @@ def main():
     print(f"  {row_count:,} Datenzeilen | {len(eng_names)} Lager | {len(item_map)} unique Artikel")
 
     # JSON aufbauen
-    # Kompaktes Format: _w = warehouses dict, i = items dict
     data = {
         '_generated': datetime.date.today().isoformat(),
-        '_stand':     stand_date,  # Datum der Quelldatei (mtime)
-        '_w': eng_names,   # { "CHU.8678": "Edubook", ... }
+        '_stand':     stand_date,
+        '_w': eng_names,
         'i': {
             item: {
-                'n': item_names[item],          # name
-                'l': locs                        # locations: { "CHU.8678": {min, qoh} }
+                'n': item_names[item],
+                'l': locs
             }
             for item, locs in item_map.items()
         }
@@ -201,8 +227,37 @@ def main():
     size_kb = len(json_str.encode()) / 1024
     print(f"OK  Gespeichert: {out_path}  ({size_kb:.0f} KB)")
 
-    if not args.no_push:
+    if not no_push:
         git_push(out_path, data['_generated'])
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Masterlist XLSX -> JSON fuer Inventur-PWA')
+    parser.add_argument('--input', default=str(DEFAULT_INPUT),
+                        help='Pfad zur Masterlist-XLSX')
+    parser.add_argument('--out', default=str(DEFAULT_OUT),
+                        help='Ausgabepfad für masterlist.json')
+    parser.add_argument('--no-push', action='store_true',
+                        help='Kein automatischer Git-Commit + Push')
+    parser.add_argument('--watch', action='store_true',
+                        help='XLSX überwachen, bei Änderung automatisch konvertieren + pushen')
+    parser.add_argument('--interval', type=int, default=30,
+                        help='Prüfintervall in Sekunden (nur mit --watch, default: 30)')
+    args = parser.parse_args()
+
+    input_path = Path(args.input)
+    out_path   = Path(args.out)
+
+    if args.watch:
+        run_watch(input_path, out_path, args.no_push, args.interval)
+        return
+
+    if not input_path.exists():
+        print(f"❌ Datei nicht gefunden: {input_path}")
+        print("   Bitte --input Pfad angeben oder Datei in den Standardpfad legen.")
+        sys.exit(1)
+
+    convert(input_path, out_path, args.no_push)
 
 
 def git_push(json_path: Path, date_str: str):
