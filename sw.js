@@ -1,7 +1,7 @@
 // ── Inventur Scanner – Service Worker ────────────────────────────────────────
 // WICHTIG: CACHE_NAME hochzählen (v2, v3, …) bei jedem Deployment.
 // Das löst die Update-Erkennung im Browser aus.
-const CACHE_NAME = 'inventur-v60';
+const CACHE_NAME = 'inventur-v61';
 
 // App-Shell (müssen alle erfolgreich geladen werden)
 const CORE_URLS = [

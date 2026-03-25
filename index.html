@@ -270,7 +270,7 @@
 <body>
 
 <header>
-  <h1>📦 Inventory Scanner <span id="build-lbl" style="font-size:11px;font-weight:400;opacity:.55;cursor:default" onclick="onBuildTap()">Build 60</span></h1>
+  <h1>📦 Inventory Scanner <span id="build-lbl" style="font-size:11px;font-weight:400;opacity:.55;cursor:default" onclick="onBuildTap()">Build 61</span></h1>
 </header>
 
 <!-- ═══════════════════ PAGE: INVENTUR ═══════════════════ -->
@@ -525,7 +525,7 @@
     <div class="scanner-wrap">
       <video id="video-ss" playsinline muted autoplay></video>
     </div>
-    <p style="text-align:center;color:var(--muted);font-size:13px;padding:10px 0 4px">
+    <p id="ss-hint" style="text-align:center;color:var(--muted);font-size:13px;padding:10px 0 4px">
       Hold barcode in the center of the frame …
     </p>
     <div style="display:flex;gap:8px;margin-top:4px">
@@ -546,7 +546,7 @@
 const MASTERLIST_URL  = 'data/masterlist.json';
 const SESSION_KEY     = 'inventur_v1';
 const WH_FILTER_KEY   = 'inventur_wh_filter';
-const BUILD           = 60;
+const BUILD           = 61;
 
 let whFilter = null; // null = all visible; Set<sub> = filtered
 
@@ -586,10 +586,58 @@ const S = {
   scanned:   {},     // {itemNr: count}
 };
 
-// ── READERS ──────────────────────────────────────────────────────────────────
-let reader1D = null;  // main scanner
-let readerQR = null;  // QR import
-let readerSS = null;  // search scan
+// ── SCANNER ENGINE ────────────────────────────────────────────────────────────
+const nativeScannerAvailable = typeof BarcodeDetector !== 'undefined';
+
+// ZXing fallback readers (created lazily, only when native not available)
+let reader1D = null;  // main scanner (ZXing fallback)
+let readerQR = null;  // QR import  (ZXing fallback)
+let readerSS = null;  // search scan (ZXing fallback)
+
+// Native scanner handles (BarcodeDetector path)
+let nativeScan1D = null;
+let nativeScanSS = null;
+let nativeScanQR = null;
+
+// Start a native BarcodeDetector scan loop on a video element.
+// Returns a handle with a stop() method.
+async function startNativeScan(videoEl, formats, callback) {
+  const detector = new BarcodeDetector({ formats });
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } }
+  });
+  videoEl.srcObject = stream;
+  await videoEl.play();
+  let active = true;
+  async function tick() {
+    if (!active) return;
+    try {
+      const found = await detector.detect(videoEl);
+      if (active && found.length > 0) {
+        callback(found[0].rawValue);
+        return; // stop scheduling after hit
+      }
+    } catch (_) {}
+    if (active) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+  return {
+    stop() {
+      active = false;
+      stream.getTracks().forEach(t => t.stop());
+      videoEl.srcObject = null;
+    }
+  };
+}
+
+// ZXing format hints (used for 1D fallback)
+function makeZXingHints1D() {
+  const hints = new Map();
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+    ZXing.BarcodeFormat.CODE_128,
+  ]);
+  return hints;
+}
 
 // Pending item for qty modal
 let pendingCode = null;
@@ -962,20 +1010,38 @@ async function toggleScan() {
     try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {}
   }
 
-  if (!reader1D) reader1D = new ZXing.BrowserMultiFormatReader();
-  try {
-    await reader1D.decodeFromConstraints(
-      { video: { facingMode: { ideal: 'environment' } } },
-      'video-main',
-      (result) => { if (result) handleCode(result.getText()); }
-    );
-  } catch (e) {
-    alert('Camera error: ' + e.message);
-    stopScan();
+  const hintEl = document.getElementById('scan-hint');
+  hintEl.textContent = 'Hold barcode in the center of the frame …';
+
+  if (nativeScannerAvailable) {
+    try {
+      nativeScan1D = await startNativeScan(
+        document.getElementById('video-main'),
+        ['code_128'],
+        (code) => handleCode(code)
+      );
+    } catch (e) {
+      alert('Camera error: ' + e.message);
+      stopScan();
+    }
+  } else {
+    hintEl.textContent = 'Hold barcode in the center of the frame … (compatibility mode)';
+    if (!reader1D) reader1D = new ZXing.BrowserMultiFormatReader(makeZXingHints1D());
+    try {
+      await reader1D.decodeFromConstraints(
+        { video: { facingMode: { ideal: 'environment' } } },
+        'video-main',
+        (result) => { if (result) handleCode(result.getText()); }
+      );
+    } catch (e) {
+      alert('Camera error: ' + e.message);
+      stopScan();
+    }
   }
 }
 
 function stopScan() {
+  if (nativeScan1D) { nativeScan1D.stop(); nativeScan1D = null; }
   if (reader1D) { try { reader1D.reset(); } catch (_) {} }
   document.getElementById('scan-modal').classList.remove('open');
   document.getElementById('btn-cam').textContent = '📷 Start Scanning';
@@ -1126,29 +1192,53 @@ async function startSearchScan() {
     try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {}
   }
 
-  if (!readerSS) readerSS = new ZXing.BrowserMultiFormatReader();
-  try {
-    await readerSS.decodeFromConstraints(
-      { video: { facingMode: { ideal: 'environment' } } },
-      'video-ss',
-      (result) => {
-        if (!result) return;
-        const code = result.getText();
-        if (!/^(\d{7}|\d{10})$/.test(code)) return;
-        readerSS.reset();
-        modal.classList.remove('open');
-        playBeep();
-        if (soundOn && navigator.vibrate) navigator.vibrate(60);
-        document.getElementById('srch-inp').value = code;
-        doSearch();
-      });
-  } catch (e) {
-    alert('Camera error: ' + e.message);
-    modal.classList.remove('open');
+  const hintEl = document.getElementById('ss-hint');
+  hintEl.textContent = 'Hold barcode in the center of the frame …';
+
+  if (nativeScannerAvailable) {
+    try {
+      nativeScanSS = await startNativeScan(
+        document.getElementById('video-ss'),
+        ['code_128'],
+        (code) => {
+          if (!/^(\d{7}|\d{10})$/.test(code)) return;
+          closeSSModal();
+          playBeep();
+          if (soundOn && navigator.vibrate) navigator.vibrate(60);
+          document.getElementById('srch-inp').value = code;
+          doSearch();
+        }
+      );
+    } catch (e) {
+      alert('Camera error: ' + e.message);
+      modal.classList.remove('open');
+    }
+  } else {
+    hintEl.textContent = 'Hold barcode in the center of the frame … (compatibility mode)';
+    if (!readerSS) readerSS = new ZXing.BrowserMultiFormatReader(makeZXingHints1D());
+    try {
+      await readerSS.decodeFromConstraints(
+        { video: { facingMode: { ideal: 'environment' } } },
+        'video-ss',
+        (result) => {
+          if (!result) return;
+          const code = result.getText();
+          if (!/^(\d{7}|\d{10})$/.test(code)) return;
+          closeSSModal();
+          playBeep();
+          if (soundOn && navigator.vibrate) navigator.vibrate(60);
+          document.getElementById('srch-inp').value = code;
+          doSearch();
+        });
+    } catch (e) {
+      alert('Camera error: ' + e.message);
+      modal.classList.remove('open');
+    }
   }
 }
 
 function closeSSModal() {
+  if (nativeScanSS) { nativeScanSS.stop(); nativeScanSS = null; }
   if (readerSS) { try { readerSS.reset(); } catch (_) {} }
   document.getElementById('ss-modal').classList.remove('open');
 }
@@ -1213,20 +1303,35 @@ async function startQRImport() {
   const modal = document.getElementById('qr-modal');
   modal.classList.add('open');
 
-  if (!readerQR) readerQR = new ZXing.BrowserMultiFormatReader();
-  try {
-    await readerQR.decodeFromConstraints(
-      { video: { facingMode: { ideal: 'environment' } } },
-      'video-qr',
-      async (result) => {
-        if (!result) return;
-        readerQR.reset();
-        modal.classList.remove('open');
-        await mergeQRPayload(result.getText());
-      });
-  } catch (e) {
-    alert('Camera error: ' + e.message);
-    modal.classList.remove('open');
+  if (nativeScannerAvailable) {
+    try {
+      nativeScanQR = await startNativeScan(
+        document.getElementById('video-qr'),
+        ['qr_code'],
+        async (text) => {
+          closeQRModal();
+          await mergeQRPayload(text);
+        }
+      );
+    } catch (e) {
+      alert('Camera error: ' + e.message);
+      modal.classList.remove('open');
+    }
+  } else {
+    if (!readerQR) readerQR = new ZXing.BrowserMultiFormatReader();
+    try {
+      await readerQR.decodeFromConstraints(
+        { video: { facingMode: { ideal: 'environment' } } },
+        'video-qr',
+        async (result) => {
+          if (!result) return;
+          closeQRModal();
+          await mergeQRPayload(result.getText());
+        });
+    } catch (e) {
+      alert('Camera error: ' + e.message);
+      modal.classList.remove('open');
+    }
   }
 }
 
@@ -1261,6 +1366,7 @@ async function mergeQRPayload(text) {
 }
 
 function closeQRModal() {
+  if (nativeScanQR) { nativeScanQR.stop(); nativeScanQR = null; }
   if (readerQR) { try { readerQR.reset(); } catch (_) {} }
   document.getElementById('qr-modal').classList.remove('open');
 }
