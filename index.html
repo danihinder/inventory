@@ -309,7 +309,7 @@
 <body>
 
 <header>
-  <h1>📦 Inventory Scanner <span id="build-lbl" style="font-size:11px;font-weight:400;opacity:.55;cursor:default" onclick="onBuildTap()"></span></h1>
+  <h1>📦 Inventory Scanner <span id="build-lbl" style="font-size:11px;font-weight:400;opacity:.55;cursor:default" onclick="onBuildTap()"></span><button id="btn-update" onclick="forceUpdate()" hidden style="margin-left:8px;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:6px;padding:2px 8px;font-size:13px;cursor:pointer">⟳</button></h1>
 </header>
 
 <!-- ═══════════════════ PAGE: INVENTUR ═══════════════════ -->
@@ -596,7 +596,7 @@
 const MASTERLIST_URL  = 'data/masterlist.json';
 const SESSION_KEY     = 'inventur_v1';
 const WH_FILTER_KEY   = 'inventur_wh_filter';
-const BUILD           = 67;
+const BUILD           = 68;
 
 let whFilter = null; // null = all visible; Set<sub> = filtered
 
@@ -888,6 +888,8 @@ function _updateBuildLabel() {
   el.textContent = 'Build ' + BUILD;
   el.style.opacity = expertMode ? '1' : '.55';
   el.style.color   = expertMode ? '#f59e0b' : '';
+  const upd = document.getElementById('btn-update');
+  if (upd) upd.hidden = !expertMode;
 }
 
 function isWhVisible(sub) {
@@ -1932,13 +1934,45 @@ function b64ToBuffer(b64) {
 // controllerchange → Seite neu laden, Session bleibt via localStorage erhalten.
 let swRefreshing = false;
 
+let swRegistration = null;
+
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js')
+    .then(reg => {
+      swRegistration = reg;
+      // Beim Page-Load aktiv nach neuem SW fragen — iOS Safari tut das sonst nur träge
+      reg.update().catch(() => {});
+      // Periodisch prüfen (alle 10 Min), während die App offen ist
+      setInterval(() => reg.update().catch(() => {}), 10 * 60 * 1000);
+    })
     .catch(e => console.warn('SW registration failed:', e));
 
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (!swRefreshing) { swRefreshing = true; location.reload(); }
   });
+}
+
+// Expert-only: Update manuell erzwingen
+async function forceUpdate() {
+  const btn = document.getElementById('btn-update');
+  if (btn) btn.textContent = '⏳';
+  try {
+    if (swRegistration) {
+      await swRegistration.update();
+      const waiting = swRegistration.waiting;
+      if (waiting) {
+        waiting.postMessage({ type: 'SKIP_WAITING' });
+      } else {
+        // Kein neuer SW wartend → harter Reload
+        location.reload();
+      }
+    } else {
+      location.reload();
+    }
+  } catch (e) {
+    alert('Update fehlgeschlagen: ' + e.message);
+    if (btn) btn.textContent = '⟳';
+  }
 }
 </script>
 
