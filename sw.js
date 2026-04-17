@@ -1,7 +1,7 @@
 // ── Inventur Scanner – Service Worker ────────────────────────────────────────
 // WICHTIG: CACHE_NAME hochzählen (v2, v3, …) bei jedem Deployment.
 // Das löst die Update-Erkennung im Browser aus.
-const CACHE_NAME = 'inventur-v67';
+const CACHE_NAME = 'inventur-v68';
 
 // App-Shell (müssen alle erfolgreich geladen werden)
 const CORE_URLS = [
@@ -19,6 +19,11 @@ const CDN_URLS = [
   'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js',
 ];
+
+// ── MESSAGE: manuelles SKIP_WAITING (Update-Button im Expert-Mode) ───────────
+self.addEventListener('message', event => {
+  if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting();
+});
 
 // ── INSTALL: Cache befüllen + sofort aktivieren ──────────────────────────────
 self.addEventListener('install', event => {
