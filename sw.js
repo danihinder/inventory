@@ -1,7 +1,7 @@
 // ── Inventur Scanner – Service Worker ────────────────────────────────────────
 // WICHTIG: CACHE_NAME hochzählen (v2, v3, …) bei jedem Deployment.
 // Das löst die Update-Erkennung im Browser aus.
-const CACHE_NAME = 'inventur-v64';
+const CACHE_NAME = 'inventur-v65';
 
 // App-Shell (müssen alle erfolgreich geladen werden)
 const CORE_URLS = [
@@ -12,10 +12,10 @@ const CORE_URLS = [
 ];
 
 // CDN-Bibliotheken (best-effort; kein Abbruch wenn offline)
-// barcode-detector polyfill (+ zxing-wasm) wird on-demand nur auf iOS geladen
-// und vom fetch-Handler bei Bedarf gecacht.
+// zxing-wasm (Reader + WASM binary) wird nur auf iOS geladen; transitive Abhängigkeiten
+// (share.js, zxing_reader.wasm) werden vom fetch-Handler beim ersten Scan gecacht.
 const CDN_URLS = [
-  'https://cdn.jsdelivr.net/npm/barcode-detector@2.3.1/dist/es/pure.min.js',
+  'https://cdn.jsdelivr.net/npm/zxing-wasm@2.1.2/dist/es/reader/index.js',
   'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js',
 ];
