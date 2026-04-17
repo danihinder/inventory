@@ -596,7 +596,7 @@
 const MASTERLIST_URL  = 'data/masterlist.json';
 const SESSION_KEY     = 'inventur_v1';
 const WH_FILTER_KEY   = 'inventur_wh_filter';
-const BUILD           = 65;
+const BUILD           = 66;
 
 let whFilter = null; // null = all visible; Set<sub> = filtered
 
@@ -661,12 +661,22 @@ async function startScan(videoEl, formats, callback, accept) {
     }
   });
   const track = stream.getVideoTracks()[0];
+  let caps = {};
   try {
-    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    caps = track.getCapabilities ? track.getCapabilities() : {};
     const adv = [];
     if (caps.focusMode && caps.focusMode.includes('continuous')) adv.push({ focusMode: 'continuous' });
     if (adv.length) await track.applyConstraints({ advanced: adv });
   } catch (_) {}
+  // Diagnose: Engine + Kamera-Caps in Debug-Zeile
+  const capList = [];
+  if (caps.torch)    capList.push('torch');
+  if (caps.zoom)     capList.push(`zoom(${caps.zoom.min}-${caps.zoom.max})`);
+  if (caps.focusMode) capList.push('focus');
+  const res = (caps.width && caps.height) ? `${caps.width.max}×${caps.height.max}` : '';
+  _dbgLog.unshift(`<span style="color:#0cf">engine: ${eng.mode}${res ? ' · ' + res : ''} · caps: ${capList.join(',') || 'none'}</span>`);
+  const el = document.getElementById('scan-debug');
+  if (el) el.innerHTML = _dbgLog.join('<br>');
   videoEl.srcObject = stream;
   await videoEl.play();
 
