@@ -306,7 +306,7 @@
 <body>
 
 <header>
-  <h1>📦 Inventory Scanner <span id="build-lbl" style="font-size:11px;font-weight:400;opacity:.55;cursor:default" onclick="onBuildTap()">Build 62</span></h1>
+  <h1>📦 Inventory Scanner <span id="build-lbl" style="font-size:11px;font-weight:400;opacity:.55;cursor:default" onclick="onBuildTap()"></span></h1>
 </header>
 
 <!-- ═══════════════════ PAGE: INVENTUR ═══════════════════ -->
@@ -593,7 +593,7 @@
 const MASTERLIST_URL  = 'data/masterlist.json';
 const SESSION_KEY     = 'inventur_v1';
 const WH_FILTER_KEY   = 'inventur_wh_filter';
-const BUILD           = 63;
+const BUILD           = 64;
 
 let whFilter = null; // null = all visible; Set<sub> = filtered
 
@@ -830,6 +830,7 @@ function onBuildTap() {
 function _updateBuildLabel() {
   const el = document.getElementById('build-lbl');
   if (!el) return;
+  el.textContent = 'Build ' + BUILD;
   el.style.opacity = expertMode ? '1' : '.55';
   el.style.color   = expertMode ? '#f59e0b' : '';
 }
