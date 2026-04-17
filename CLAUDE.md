@@ -7,7 +7,7 @@ Mitarbeiter scannen Barcodes mit dem Handy, vergleichen mit der Inventurliste (X
 
 **Live-URL:** `https://danihinder.github.io/inventory/`
 **Deployment:** GitHub Pages (automatisch bei Push auf main)
-**Aktueller Build:** 60
+**Build-Nummer:** steht in `const BUILD` in `index.html`; der Header liest sie daraus und zeigt sie an.
 
 ---
 
@@ -69,11 +69,29 @@ SW-Strategie: **Network-first** (immer aktuellste Daten, Fallback Cache).
 
 ## CDN-Abhängigkeiten (fest versioniert)
 
-- **ZXing** `@0.18.6` – Barcode/QR-Scanner (Code128 + QR auf iOS & Android)
+- **zxing-wasm** `@2.1.2` – Barcode-Decoder (C++-ZXing als WebAssembly).
+  **Nur auf iOS geladen**, weil iOS Safari keinen nativen `BarcodeDetector` hat.
+  Auf Android läuft der native `BarcodeDetector` (ML-Kit) — der ist bereits gut getuned
+  und kennt keine `tryHarder`-Option. Die Zweigentscheidung steckt im `<script type="module">`
+  im Head; `window.scannerReady` exponiert `{mode: 'native' | 'wasm', ...}`.
 - **SheetJS** `xlsx-0.20.3` – XLSX lesen + schreiben im Browser
 - **QRCode.js** `1.0.0` via cdnjs – QR-Code generieren (Merge-Funktion)
 
-Alle drei werden vom SW gecacht (best-effort).
+Alle werden vom SW gecacht (best-effort). Transitive Deps des zxing-wasm
+(share.js, `zxing_reader.wasm`, ~500 KB) cachen beim ersten Scan via fetch-Handler →
+**erste iOS-Nutzung braucht Online-Verbindung**.
+
+### Scanner-Engine-Details
+- Auf iOS: eigener Tick-Loop (~13 Hz) zeichnet jedes Tick das Video-Frame auf ein
+  Canvas (max. 1280-px-Kante) und ruft `readBarcodes(imgData, {tryHarder, tryRotate,
+  tryInvert, tryDownscale, maxNumberOfSymbols: 1})`. `tryHarder` ist CPU-intensiv,
+  deshalb gedrosselt.
+- False-Positives aus `tryHarder` (z.B. 2-Zeichen-Geistermatches aus Kantenrauschen)
+  werden vom `isInventoryCode`-Filter in der Scan-Loop abgefangen — Loop läuft weiter
+  statt sich zu beenden (Regression-Schutz, Build 63).
+- Torch + Zoom: via `track.getCapabilities()` und `applyConstraints({advanced: […]})`.
+  Capability-gated (Buttons sichtbar nur wenn die Kamera es meldet). Auf iOS Safari
+  ist Torch wankelig — fehlgeschlagene Toggles erscheinen in der Debug-Zeile.
 
 ---
 
@@ -114,9 +132,13 @@ Merge-Logik: Mengen werden **addiert** (kein Überschreiben).
 
 ## Service Worker
 
-- Cache-Name muss bei **jedem Deployment hochgezählt** werden: `inventur-v<N>`
+- Cache-Name muss bei **jedem Deployment hochgezählt** werden: `inventur-v<N>` (idealerweise gleich wie `BUILD`)
 - `skipWaiting` im Install → neuer SW übernimmt sofort
 - `controllerchange` → App lädt automatisch neu (Session bleibt via localStorage)
+- **Auto-Update** (Build 68): Beim Page-Load und alle 10 Min ruft der Client `reg.update()`,
+  damit iOS Safari nicht tagelang auf alter Version hängenbleibt
+- **Manueller Update-Button** (⟳ im Header, nur Expert-Mode): ruft `reg.update()` und
+  postet `{type:'SKIP_WAITING'}` an einen wartenden Worker
 
 ---
 
@@ -140,10 +162,12 @@ Artikel gilt als "vollständig" wenn deficit = 0.
 
 ## Deployment-Workflow
 
-1. `index.html` ändern
-2. `sw.js`: `CACHE_NAME = 'inventur-v<N+1>'` hochzählen
-3. `git commit` + `git push` → GitHub Pages aktualisiert automatisch
-4. Masterlist-Update (separat): `python generate_masterlist.py` → commitet + pusht automatisch
+1. `index.html` ändern + `const BUILD` hochzählen (Header-Label liest daraus)
+2. `sw.js`: `CACHE_NAME = 'inventur-v<N+1>'` hochzählen (selbe Nummer wie BUILD)
+3. `git commit` + `git push` → GitHub Pages aktualisiert automatisch (ca. 1 Min)
+4. Clients kriegen das Update binnen ~10 Sek nach dem nächsten Page-Reload,
+   dank `reg.update()`. Falls jemand hängt: ⟳-Button im Header (Expert-Mode).
+5. Masterlist-Update (separat): `python generate_masterlist.py` → commitet + pusht automatisch
 
 ---
 
