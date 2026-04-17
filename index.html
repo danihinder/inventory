@@ -596,7 +596,7 @@
 const MASTERLIST_URL  = 'data/masterlist.json';
 const SESSION_KEY     = 'inventur_v1';
 const WH_FILTER_KEY   = 'inventur_wh_filter';
-const BUILD           = 66;
+const BUILD           = 67;
 
 let whFilter = null; // null = all visible; Set<sub> = filtered
 
@@ -789,12 +789,18 @@ async function toggleTorch(key) {
   if (!track) return;
   const btn = document.getElementById('torch-' + key);
   const on = !btn.classList.contains('on');
+  const caps = (track.getCapabilities && track.getCapabilities()) || {};
   try {
+    if (!caps.torch) throw new Error('caps.torch = ' + caps.torch);
     await track.applyConstraints({ advanced: [{ torch: on }] });
     btn.classList.toggle('on', on);
+    _dbgLog.unshift(`<span style="color:#0cf">torch → ${on ? 'on' : 'off'} ✓</span>`);
   } catch (e) {
+    _dbgLog.unshift(`<span style="color:#f80">torch FAIL: ${e.name || ''} ${e.message || e}</span>`);
     console.warn('torch failed', e);
   }
+  const el = document.getElementById('scan-debug');
+  if (el) el.innerHTML = _dbgLog.slice(0, 5).join('<br>');
 }
 
 async function setZoom(key, value) {
