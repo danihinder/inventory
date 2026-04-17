@@ -9,8 +9,20 @@
   <title>Inventory Scanner</title>
   <link rel="manifest" href="manifest.json">
 
-  <!-- ZXing: Code128 + QR on iOS & Android -->
-  <script src="https://unpkg.com/@zxing/library@0.18.6/umd/index.min.js"></script>
+  <!-- BarcodeDetector polyfill (zxing-wasm) for iOS Safari; Android Chrome uses native -->
+  <script type="module">
+    window.scannerReady = (async () => {
+      if ('BarcodeDetector' in window) {
+        try {
+          const formats = await BarcodeDetector.getSupportedFormats();
+          if (formats.includes('code_128')) return 'native';
+        } catch (_) {}
+      }
+      const mod = await import('https://cdn.jsdelivr.net/npm/barcode-detector@2.3.1/dist/es/pure.min.js');
+      window.BarcodeDetector = mod.BarcodeDetector;
+      return 'wasm';
+    })();
+  </script>
   <!-- SheetJS: read + write xlsx in browser -->
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
   <!-- QRCode.js: generate QR codes (qrcodejs via cdnjs) -->
@@ -126,8 +138,32 @@
       border-radius: 12px;
       overflow: hidden;
       background: #000;
+      aspect-ratio: 4 / 3;
     }
-    .scanner-wrap video { width: 100%; display: block; }
+    .scanner-wrap video {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: cover;
+    }
+    .torch-btn {
+      position: absolute;
+      top: 10px; right: 10px;
+      width: 44px; height: 44px;
+      border-radius: 50%; border: none;
+      background: rgba(0,0,0,.55);
+      color: #fff; font-size: 22px;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      z-index: 2;
+    }
+    .torch-btn.on { background: #ffd84a; color: #000; }
+    .zoom-row {
+      display: flex; align-items: center; gap: 10px;
+      margin-top: 8px; padding: 0 4px;
+    }
+    .zoom-row span { font-size: 16px; }
+    .zoom-row input[type=range] { flex: 1; }
     #scan-hint {
       text-align: center;
       color: var(--muted);
@@ -270,7 +306,7 @@
 <body>
 
 <header>
-  <h1>📦 Inventory Scanner <span id="build-lbl" style="font-size:11px;font-weight:400;opacity:.55;cursor:default" onclick="onBuildTap()">Build 61</span></h1>
+  <h1>📦 Inventory Scanner <span id="build-lbl" style="font-size:11px;font-weight:400;opacity:.55;cursor:default" onclick="onBuildTap()">Build 62</span></h1>
 </header>
 
 <!-- ═══════════════════ PAGE: INVENTUR ═══════════════════ -->
@@ -495,10 +531,16 @@
   <div class="modal">
     <div class="scanner-wrap">
       <video id="video-main" playsinline muted autoplay></video>
+      <button type="button" class="torch-btn" id="torch-main" onclick="toggleTorch('main')" hidden>🔦</button>
+    </div>
+    <div class="zoom-row" id="zoom-main" hidden>
+      <span>🔍</span>
+      <input type="range" id="zoom-slider-main" oninput="setZoom('main', this.value)">
     </div>
     <p id="scan-hint" style="text-align:center;color:var(--muted);font-size:13px;padding:10px 0 4px">
       Hold barcode in the center of the frame …
     </p>
+    <div id="scan-debug" style="font-family:monospace;font-size:11px;background:#111;color:#0f0;padding:5px 8px;border-radius:6px;margin:2px 0 4px;min-height:18px;line-height:1.5"></div>
     <div style="display:flex;gap:8px;margin-top:4px">
       <button class="btn btn-sm btn-sound" id="btn-sound-main" onclick="toggleSound()" style="flex:1">🔔 Sound</button>
       <button class="btn btn-outline btn-sm" style="flex:1" onclick="stopScan()">⏹ Stop</button>
@@ -524,6 +566,11 @@
   <div class="modal">
     <div class="scanner-wrap">
       <video id="video-ss" playsinline muted autoplay></video>
+      <button type="button" class="torch-btn" id="torch-ss" onclick="toggleTorch('ss')" hidden>🔦</button>
+    </div>
+    <div class="zoom-row" id="zoom-ss" hidden>
+      <span>🔍</span>
+      <input type="range" id="zoom-slider-ss" oninput="setZoom('ss', this.value)">
     </div>
     <p id="ss-hint" style="text-align:center;color:var(--muted);font-size:13px;padding:10px 0 4px">
       Hold barcode in the center of the frame …
@@ -546,7 +593,7 @@
 const MASTERLIST_URL  = 'data/masterlist.json';
 const SESSION_KEY     = 'inventur_v1';
 const WH_FILTER_KEY   = 'inventur_wh_filter';
-const BUILD           = 61;
+const BUILD           = 62;
 
 let whFilter = null; // null = all visible; Set<sub> = filtered
 
@@ -587,25 +634,32 @@ const S = {
 };
 
 // ── SCANNER ENGINE ────────────────────────────────────────────────────────────
-const nativeScannerAvailable = typeof BarcodeDetector !== 'undefined';
+// Scan handles (active decoder loop + camera track controls)
+let scan1D = null;
+let scanSS = null;
+let scanQR = null;
 
-// ZXing fallback readers (created lazily, only when native not available)
-let reader1D = null;  // main scanner (ZXing fallback)
-let readerQR = null;  // QR import  (ZXing fallback)
-let readerSS = null;  // search scan (ZXing fallback)
-
-// Native scanner handles (BarcodeDetector path)
-let nativeScan1D = null;
-let nativeScanSS = null;
-let nativeScanQR = null;
-
-// Start a native BarcodeDetector scan loop on a video element.
-// Returns a handle with a stop() method.
-async function startNativeScan(videoEl, formats, callback) {
+// Start a BarcodeDetector scan loop on a video element.
+// Uses native BarcodeDetector on Android/Chrome; polyfilled via zxing-wasm on iOS.
+// Returns a handle with stop() + track (for torch/zoom).
+async function startScan(videoEl, formats, callback) {
+  await window.scannerReady; // wait for polyfill if needed
   const detector = new BarcodeDetector({ formats });
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } }
+    video: {
+      facingMode: { ideal: 'environment' },
+      width:  { ideal: 1920 },
+      height: { ideal: 1080 },
+    }
   });
+  const track = stream.getVideoTracks()[0];
+  // Try to request continuous autofocus (best-effort; ignored if unsupported)
+  try {
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    const adv = [];
+    if (caps.focusMode && caps.focusMode.includes('continuous')) adv.push({ focusMode: 'continuous' });
+    if (adv.length) await track.applyConstraints({ advanced: adv });
+  } catch (_) {}
   videoEl.srcObject = stream;
   await videoEl.play();
   let active = true;
@@ -614,14 +668,16 @@ async function startNativeScan(videoEl, formats, callback) {
     try {
       const found = await detector.detect(videoEl);
       if (active && found.length > 0) {
+        dbgCode(found[0].rawValue);
         callback(found[0].rawValue);
-        return; // stop scheduling after hit
+        return;
       }
     } catch (_) {}
     if (active) requestAnimationFrame(tick);
   }
   requestAnimationFrame(tick);
   return {
+    track,
     stop() {
       active = false;
       stream.getTracks().forEach(t => t.stop());
@@ -630,13 +686,67 @@ async function startNativeScan(videoEl, formats, callback) {
   };
 }
 
-// ZXing format hints (used for 1D fallback)
-function makeZXingHints1D() {
-  const hints = new Map();
-  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-    ZXing.BarcodeFormat.CODE_128,
-  ]);
-  return hints;
+// Track control state per modal (main, ss)
+const _tracks = { main: null, ss: null };
+
+function setupTrackControls(track, key) {
+  _tracks[key] = track;
+  const caps = (track.getCapabilities && track.getCapabilities()) || {};
+  // Torch
+  const torchBtn = document.getElementById('torch-' + key);
+  if (torchBtn) {
+    if (caps.torch) {
+      torchBtn.hidden = false;
+      torchBtn.classList.remove('on');
+    } else {
+      torchBtn.hidden = true;
+    }
+  }
+  // Zoom
+  const zoomWrap = document.getElementById('zoom-' + key);
+  const zoomSlider = document.getElementById('zoom-slider-' + key);
+  if (zoomWrap && zoomSlider) {
+    if (caps.zoom && caps.zoom.max > caps.zoom.min) {
+      zoomSlider.min   = caps.zoom.min;
+      zoomSlider.max   = caps.zoom.max;
+      zoomSlider.step  = caps.zoom.step || 0.1;
+      zoomSlider.value = track.getSettings().zoom ?? caps.zoom.min;
+      zoomWrap.hidden  = false;
+    } else {
+      zoomWrap.hidden  = true;
+    }
+  }
+}
+
+function hideTrackControls(key) {
+  _tracks[key] = null;
+  const torchBtn = document.getElementById('torch-' + key);
+  if (torchBtn) { torchBtn.hidden = true; torchBtn.classList.remove('on'); }
+  const zoomWrap = document.getElementById('zoom-' + key);
+  if (zoomWrap) zoomWrap.hidden = true;
+}
+
+async function toggleTorch(key) {
+  const track = _tracks[key];
+  if (!track) return;
+  const btn = document.getElementById('torch-' + key);
+  const on = !btn.classList.contains('on');
+  try {
+    await track.applyConstraints({ advanced: [{ torch: on }] });
+    btn.classList.toggle('on', on);
+  } catch (e) {
+    console.warn('torch failed', e);
+  }
+}
+
+async function setZoom(key, value) {
+  const track = _tracks[key];
+  if (!track) return;
+  try {
+    await track.applyConstraints({ advanced: [{ zoom: parseFloat(value) }] });
+  } catch (e) {
+    console.warn('zoom failed', e);
+  }
 }
 
 // Pending item for qty modal
@@ -647,6 +757,19 @@ let lastCode = null, lastCodeTime = 0;
 
 // Scanner auto-reopen after qty confirm
 let scannerAutoReopen = false;
+
+// Debug log for raw scan results (shown in scan modal)
+const _dbgLog = [];
+function dbgCode(raw) {
+  const ok = /^(\d{7}|\d{10})$/.test(raw);
+  const safe = [...raw].map(c => c.charCodeAt(0) < 32
+    ? `<span style="color:#f80">\\x${c.charCodeAt(0).toString(16).padStart(2,'0')}</span>`
+    : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c).join('');
+  _dbgLog.unshift(`${ok ? '<span style="color:#0f0">✓</span>' : '<span style="color:#f44">✗</span>'} [${raw.length}] &quot;${safe}&quot;`);
+  if (_dbgLog.length > 5) _dbgLog.pop();
+  const el = document.getElementById('scan-debug');
+  if (el) el.innerHTML = _dbgLog.join('<br>');
+}
 
 // Sound + Haptic
 let soundOn  = localStorage.getItem('inventur_sound') !== '0'; // default: an
@@ -1012,37 +1135,26 @@ async function toggleScan() {
 
   const hintEl = document.getElementById('scan-hint');
   hintEl.textContent = 'Hold barcode in the center of the frame …';
+  _dbgLog.length = 0;
+  const dbgEl = document.getElementById('scan-debug');
+  if (dbgEl) dbgEl.innerHTML = '';
 
-  if (nativeScannerAvailable) {
-    try {
-      nativeScan1D = await startNativeScan(
-        document.getElementById('video-main'),
-        ['code_128'],
-        (code) => handleCode(code)
-      );
-    } catch (e) {
-      alert('Camera error: ' + e.message);
-      stopScan();
-    }
-  } else {
-    hintEl.textContent = 'Hold barcode in the center of the frame … (compatibility mode)';
-    if (!reader1D) reader1D = new ZXing.BrowserMultiFormatReader(makeZXingHints1D());
-    try {
-      await reader1D.decodeFromConstraints(
-        { video: { facingMode: { ideal: 'environment' } } },
-        'video-main',
-        (result) => { if (result) handleCode(result.getText()); }
-      );
-    } catch (e) {
-      alert('Camera error: ' + e.message);
-      stopScan();
-    }
+  try {
+    scan1D = await startScan(
+      document.getElementById('video-main'),
+      ['code_128'],
+      (code) => handleCode(code)
+    );
+    setupTrackControls(scan1D.track, 'main');
+  } catch (e) {
+    alert('Camera error: ' + e.message);
+    stopScan();
   }
 }
 
 function stopScan() {
-  if (nativeScan1D) { nativeScan1D.stop(); nativeScan1D = null; }
-  if (reader1D) { try { reader1D.reset(); } catch (_) {} }
+  if (scan1D) { scan1D.stop(); scan1D = null; }
+  hideTrackControls('main');
   document.getElementById('scan-modal').classList.remove('open');
   document.getElementById('btn-cam').textContent = '📷 Start Scanning';
 }
@@ -1195,51 +1307,29 @@ async function startSearchScan() {
   const hintEl = document.getElementById('ss-hint');
   hintEl.textContent = 'Hold barcode in the center of the frame …';
 
-  if (nativeScannerAvailable) {
-    try {
-      nativeScanSS = await startNativeScan(
-        document.getElementById('video-ss'),
-        ['code_128'],
-        (code) => {
-          if (!/^(\d{7}|\d{10})$/.test(code)) return;
-          closeSSModal();
-          playBeep();
-          if (soundOn && navigator.vibrate) navigator.vibrate(60);
-          document.getElementById('srch-inp').value = code;
-          doSearch();
-        }
-      );
-    } catch (e) {
-      alert('Camera error: ' + e.message);
-      modal.classList.remove('open');
-    }
-  } else {
-    hintEl.textContent = 'Hold barcode in the center of the frame … (compatibility mode)';
-    if (!readerSS) readerSS = new ZXing.BrowserMultiFormatReader(makeZXingHints1D());
-    try {
-      await readerSS.decodeFromConstraints(
-        { video: { facingMode: { ideal: 'environment' } } },
-        'video-ss',
-        (result) => {
-          if (!result) return;
-          const code = result.getText();
-          if (!/^(\d{7}|\d{10})$/.test(code)) return;
-          closeSSModal();
-          playBeep();
-          if (soundOn && navigator.vibrate) navigator.vibrate(60);
-          document.getElementById('srch-inp').value = code;
-          doSearch();
-        });
-    } catch (e) {
-      alert('Camera error: ' + e.message);
-      modal.classList.remove('open');
-    }
+  try {
+    scanSS = await startScan(
+      document.getElementById('video-ss'),
+      ['code_128'],
+      (code) => {
+        if (!/^(\d{7}|\d{10})$/.test(code)) return;
+        closeSSModal();
+        playBeep();
+        if (soundOn && navigator.vibrate) navigator.vibrate(60);
+        document.getElementById('srch-inp').value = code;
+        doSearch();
+      }
+    );
+    setupTrackControls(scanSS.track, 'ss');
+  } catch (e) {
+    alert('Camera error: ' + e.message);
+    modal.classList.remove('open');
   }
 }
 
 function closeSSModal() {
-  if (nativeScanSS) { nativeScanSS.stop(); nativeScanSS = null; }
-  if (readerSS) { try { readerSS.reset(); } catch (_) {} }
+  if (scanSS) { scanSS.stop(); scanSS = null; }
+  hideTrackControls('ss');
   document.getElementById('ss-modal').classList.remove('open');
 }
 
@@ -1303,35 +1393,18 @@ async function startQRImport() {
   const modal = document.getElementById('qr-modal');
   modal.classList.add('open');
 
-  if (nativeScannerAvailable) {
-    try {
-      nativeScanQR = await startNativeScan(
-        document.getElementById('video-qr'),
-        ['qr_code'],
-        async (text) => {
-          closeQRModal();
-          await mergeQRPayload(text);
-        }
-      );
-    } catch (e) {
-      alert('Camera error: ' + e.message);
-      modal.classList.remove('open');
-    }
-  } else {
-    if (!readerQR) readerQR = new ZXing.BrowserMultiFormatReader();
-    try {
-      await readerQR.decodeFromConstraints(
-        { video: { facingMode: { ideal: 'environment' } } },
-        'video-qr',
-        async (result) => {
-          if (!result) return;
-          closeQRModal();
-          await mergeQRPayload(result.getText());
-        });
-    } catch (e) {
-      alert('Camera error: ' + e.message);
-      modal.classList.remove('open');
-    }
+  try {
+    scanQR = await startScan(
+      document.getElementById('video-qr'),
+      ['qr_code'],
+      async (text) => {
+        closeQRModal();
+        await mergeQRPayload(text);
+      }
+    );
+  } catch (e) {
+    alert('Camera error: ' + e.message);
+    modal.classList.remove('open');
   }
 }
 
@@ -1366,8 +1439,7 @@ async function mergeQRPayload(text) {
 }
 
 function closeQRModal() {
-  if (nativeScanQR) { nativeScanQR.stop(); nativeScanQR = null; }
-  if (readerQR) { try { readerQR.reset(); } catch (_) {} }
+  if (scanQR) { scanQR.stop(); scanQR = null; }
   document.getElementById('qr-modal').classList.remove('open');
 }
 
