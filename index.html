@@ -593,7 +593,7 @@
 const MASTERLIST_URL  = 'data/masterlist.json';
 const SESSION_KEY     = 'inventur_v1';
 const WH_FILTER_KEY   = 'inventur_wh_filter';
-const BUILD           = 62;
+const BUILD           = 63;
 
 let whFilter = null; // null = all visible; Set<sub> = filtered
 
@@ -641,8 +641,10 @@ let scanQR = null;
 
 // Start a BarcodeDetector scan loop on a video element.
 // Uses native BarcodeDetector on Android/Chrome; polyfilled via zxing-wasm on iOS.
-// Returns a handle with stop() + track (for torch/zoom).
-async function startScan(videoEl, formats, callback) {
+// `accept(raw)` returns true for a valid hit → callback fires + loop ends.
+// Returning false keeps the loop alive (schützt gegen Code128 False-Positives
+// wie 2-Zeichen-"ID" aus Kantenrauschen).
+async function startScan(videoEl, formats, callback, accept) {
   await window.scannerReady; // wait for polyfill if needed
   const detector = new BarcodeDetector({ formats });
   const stream = await navigator.mediaDevices.getUserMedia({
@@ -668,9 +670,13 @@ async function startScan(videoEl, formats, callback) {
     try {
       const found = await detector.detect(videoEl);
       if (active && found.length > 0) {
-        dbgCode(found[0].rawValue);
-        callback(found[0].rawValue);
-        return;
+        const raw = found[0].rawValue;
+        dbgCode(raw);
+        if (!accept || accept(raw)) {
+          callback(raw);
+          return; // valid hit → stop ticking
+        }
+        // spurious match → keep scanning
       }
     } catch (_) {}
     if (active) requestAnimationFrame(tick);
@@ -685,6 +691,9 @@ async function startScan(videoEl, formats, callback) {
     }
   };
 }
+
+// Validator: inventory barcodes are always 7 or 10 digits
+const isInventoryCode = (raw) => /^(\d{7}|\d{10})$/.test(raw);
 
 // Track control state per modal (main, ss)
 const _tracks = { main: null, ss: null };
@@ -1143,7 +1152,8 @@ async function toggleScan() {
     scan1D = await startScan(
       document.getElementById('video-main'),
       ['code_128'],
-      (code) => handleCode(code)
+      (code) => handleCode(code),
+      isInventoryCode
     );
     setupTrackControls(scan1D.track, 'main');
   } catch (e) {
@@ -1312,13 +1322,13 @@ async function startSearchScan() {
       document.getElementById('video-ss'),
       ['code_128'],
       (code) => {
-        if (!/^(\d{7}|\d{10})$/.test(code)) return;
         closeSSModal();
         playBeep();
         if (soundOn && navigator.vibrate) navigator.vibrate(60);
         document.getElementById('srch-inp').value = code;
         doSearch();
-      }
+      },
+      isInventoryCode
     );
     setupTrackControls(scanSS.track, 'ss');
   } catch (e) {
