@@ -9,18 +9,21 @@
   <title>Inventory Scanner</title>
   <link rel="manifest" href="manifest.json">
 
-  <!-- BarcodeDetector polyfill (zxing-wasm) for iOS Safari; Android Chrome uses native -->
+  <!-- Scanner-Engine:
+       Android Chrome → native BarcodeDetector (ML-Kit, bereits gut getuned)
+       iOS Safari    → zxing-wasm direkt (erlaubt tryHarder, tryRotate, tryInvert, tryDownscale)
+  -->
   <script type="module">
     window.scannerReady = (async () => {
       if ('BarcodeDetector' in window) {
         try {
-          const formats = await BarcodeDetector.getSupportedFormats();
-          if (formats.includes('code_128')) return 'native';
+          const fmt = await BarcodeDetector.getSupportedFormats();
+          if (fmt.includes('code_128')) return { mode: 'native' };
         } catch (_) {}
       }
-      const mod = await import('https://cdn.jsdelivr.net/npm/barcode-detector@2.3.1/dist/es/pure.min.js');
-      window.BarcodeDetector = mod.BarcodeDetector;
-      return 'wasm';
+      const mod = await import('https://cdn.jsdelivr.net/npm/zxing-wasm@2.1.2/dist/es/reader/index.js');
+      await mod.prepareZXingModule(); // WASM vorwärmen
+      return { mode: 'wasm', readBarcodes: mod.readBarcodes };
     })();
   </script>
   <!-- SheetJS: read + write xlsx in browser -->
@@ -593,7 +596,7 @@
 const MASTERLIST_URL  = 'data/masterlist.json';
 const SESSION_KEY     = 'inventur_v1';
 const WH_FILTER_KEY   = 'inventur_wh_filter';
-const BUILD           = 64;
+const BUILD           = 65;
 
 let whFilter = null; // null = all visible; Set<sub> = filtered
 
@@ -639,14 +642,17 @@ let scan1D = null;
 let scanSS = null;
 let scanQR = null;
 
-// Start a BarcodeDetector scan loop on a video element.
-// Uses native BarcodeDetector on Android/Chrome; polyfilled via zxing-wasm on iOS.
+// Format mapping: BarcodeDetector-Spec → zxing-wasm
+const ZX_FMT = { 'code_128': 'Code128', 'qr_code': 'QRCode' };
+
+// Start a scan loop on a video element.
+// Two engines, gleiche Signatur:
+//   native (Android/Chrome) → BarcodeDetector.detect(video)
+//   wasm  (iOS Safari)      → zxing-wasm readBarcodes(imageData, {tryHarder, ...})
 // `accept(raw)` returns true for a valid hit → callback fires + loop ends.
-// Returning false keeps the loop alive (schützt gegen Code128 False-Positives
-// wie 2-Zeichen-"ID" aus Kantenrauschen).
+// False positives (kurze Kantenrauschen-Matches) werden verworfen, Loop läuft weiter.
 async function startScan(videoEl, formats, callback, accept) {
-  await window.scannerReady; // wait for polyfill if needed
-  const detector = new BarcodeDetector({ formats });
+  const eng = await window.scannerReady;
   const stream = await navigator.mediaDevices.getUserMedia({
     video: {
       facingMode: { ideal: 'environment' },
@@ -655,7 +661,6 @@ async function startScan(videoEl, formats, callback, accept) {
     }
   });
   const track = stream.getVideoTracks()[0];
-  // Try to request continuous autofocus (best-effort; ignored if unsupported)
   try {
     const caps = track.getCapabilities ? track.getCapabilities() : {};
     const adv = [];
@@ -664,24 +669,58 @@ async function startScan(videoEl, formats, callback, accept) {
   } catch (_) {}
   videoEl.srcObject = stream;
   await videoEl.play();
+
   let active = true;
-  async function tick() {
-    if (!active) return;
-    try {
-      const found = await detector.detect(videoEl);
-      if (active && found.length > 0) {
-        const raw = found[0].rawValue;
-        dbgCode(raw);
-        if (!accept || accept(raw)) {
-          callback(raw);
-          return; // valid hit → stop ticking
+  const hit = (raw) => {
+    dbgCode(raw);
+    if (!accept || accept(raw)) { callback(raw); return true; }
+    return false; // spurious → keep scanning
+  };
+
+  if (eng.mode === 'native') {
+    const detector = new BarcodeDetector({ formats });
+    (async function tick() {
+      if (!active) return;
+      try {
+        const found = await detector.detect(videoEl);
+        if (active && found.length > 0 && hit(found[0].rawValue)) return;
+      } catch (_) {}
+      if (active) requestAnimationFrame(tick);
+    })();
+  } else {
+    // zxing-wasm path with tryHarder. Video wird auf max. 1280 Kante herunterskaliert
+    // (reicht für Code128 aus und spart ~60% CPU gegenüber 1920×1080).
+    const zFormats = formats.map(f => ZX_FMT[f]).filter(Boolean);
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const MAX_EDGE = 1280;
+    const opts = {
+      formats: zFormats,
+      tryHarder: true,
+      tryRotate: true,
+      tryInvert: true,
+      tryDownscale: true,
+      maxNumberOfSymbols: 1,
+    };
+    (async function tick() {
+      if (!active) return;
+      try {
+        const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
+        if (vw > 0 && vh > 0) {
+          const scale = Math.min(1, MAX_EDGE / Math.max(vw, vh));
+          canvas.width  = Math.round(vw * scale);
+          canvas.height = Math.round(vh * scale);
+          ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+          const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const results = await eng.readBarcodes(img, opts);
+          if (active && results.length > 0 && hit(results[0].text)) return;
         }
-        // spurious match → keep scanning
-      }
-    } catch (_) {}
-    if (active) requestAnimationFrame(tick);
+      } catch (_) {}
+      // ~13 Hz drosseln — tryHarder ist CPU-intensiv, Akku schonen
+      if (active) setTimeout(tick, 75);
+    })();
   }
-  requestAnimationFrame(tick);
+
   return {
     track,
     stop() {
