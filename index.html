@@ -601,7 +601,7 @@
 const MASTERLIST_URL  = 'data/masterlist.json';
 const SESSION_KEY     = 'inventur_v1';
 const WH_FILTER_KEY   = 'inventur_wh_filter';
-const BUILD           = 70;
+const BUILD           = 71;
 
 let whFilter = null; // null = all visible; Set<sub> = filtered
 
@@ -649,10 +649,11 @@ let scanQR = null;
 
 // Kamera-Auswahl (Android-Phones haben oft mehrere Rückkameras; Chrome wählt per
 // `facingMode: 'environment'` bei 1920×1080 manchmal die Ultraweitwinkel-Linse mit
-// schlechter Nah-Fokussierung). _backCams wird beim ersten startScan gefüllt,
-// _camIdx ist der vom User gewählte Index (persistiert in localStorage).
+// schlechter Nah-Fokussierung). Default = Index 0 der Back-Cams (= Hauptlinse).
+// _camIdx ist persistiert wenn der User explizit eine Cam gewählt hat.
 let _backCams = [];
-let _camIdx = parseInt(localStorage.getItem('inventur_cam_idx') || '0', 10);
+const _camStored = localStorage.getItem('inventur_cam_idx');
+let _camIdx = _camStored !== null ? parseInt(_camStored, 10) : 0;
 const _restartScan = { main: null, ss: null };
 
 // Format mapping: BarcodeDetector-Spec → zxing-wasm
@@ -666,11 +667,33 @@ const ZX_FMT = { 'code_128': 'Code128', 'qr_code': 'QRCode' };
 // False positives (kurze Kantenrauschen-Matches) werden verworfen, Loop läuft weiter.
 async function startScan(videoEl, formats, callback, accept) {
   const eng = await window.scannerReady;
-
-  // Schritt 1: Kamera öffnen. Wenn wir schon einen bevorzugten Device-ID gespeichert
-  // haben (aus _backCams[_camIdx]), direkt damit öffnen. Sonst per facingMode.
-  const preferredId = _backCams[_camIdx]?.deviceId;
   const baseVideo = { width: { ideal: 1920 }, height: { ideal: 1080 } };
+
+  // Schritt 1: Kamera-Liste ermitteln. enumerateDevices() liefert erst nach erteilter
+  // Permission Labels — daher beim ersten Aufruf dieser Session kurz einen Stream
+  // öffnen, enumerieren, und dann sofort schliessen. Danach cachen wir _backCams.
+  if (!_backCams.length) {
+    let permStream = null;
+    try {
+      permStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } }
+      });
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const all = devices.filter(d => d.kind === 'videoinput');
+      const backs = all.filter(d => /back|rück|rear|environment/i.test(d.label));
+      _backCams = backs.length ? backs : all;
+    } catch (_) {
+    } finally {
+      if (permStream) permStream.getTracks().forEach(t => t.stop());
+    }
+  }
+
+  // Index absichern (falls localStorage-Wert aus einer Session mit anderem Phone stammt)
+  if (_camIdx >= _backCams.length) _camIdx = 0;
+
+  // Schritt 2: Den richtigen Stream öffnen — bevorzugt per deviceId (Chrome's
+  // facingMode-Heuristik wählt sonst oft die falsche Linse bei 1920×1080).
+  const preferredId = _backCams[_camIdx]?.deviceId;
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -679,24 +702,10 @@ async function startScan(videoEl, formats, callback, accept) {
         : { ...baseVideo, facingMode: { ideal: 'environment' } }
     });
   } catch (e) {
-    // Fallback: wenn exact deviceId fehlgeschlagen ist, nochmal mit facingMode
     stream = await navigator.mediaDevices.getUserMedia({
       video: { ...baseVideo, facingMode: { ideal: 'environment' } }
     });
   }
-
-  // Schritt 2: Geräte enumerieren (Label erst nach Permission sichtbar). Back-Kameras
-  // filtern. Auf Android gibt es oft 2-4 davon (Haupt/Ultraweit/Tele/Macro).
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const all = devices.filter(d => d.kind === 'videoinput');
-    const backs = all.filter(d => /back|rück|rear|environment/i.test(d.label));
-    _backCams = backs.length ? backs : all;
-    // aktuelle Kamera im Index nachziehen
-    const curId = stream.getVideoTracks()[0].getSettings().deviceId;
-    const idx = _backCams.findIndex(d => d.deviceId === curId);
-    if (idx >= 0) _camIdx = idx;
-  } catch (_) {}
 
   const track = stream.getVideoTracks()[0];
   let caps = {};

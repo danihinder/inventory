@@ -92,6 +92,14 @@ Alle werden vom SW gecacht (best-effort). Transitive Deps des zxing-wasm
 - Torch + Zoom: via `track.getCapabilities()` und `applyConstraints({advanced: […]})`.
   Capability-gated (Buttons sichtbar nur wenn die Kamera es meldet). Auf iOS Safari
   ist Torch wankelig — fehlgeschlagene Toggles erscheinen in der Debug-Zeile.
+- **Kamera-Auswahl (Android, Build 70):** Android-Phones haben oft mehrere Rückkameras
+  (Haupt/Ultraweit/Tele/Macro). Chrome wählt bei `facingMode: 'environment'` +
+  1920×1080 zufällig eine davon — oft die Ultraweit mit schlechter Nah-Fokussierung.
+  Wir enumerieren mit `enumerateDevices()` und defaulten auf **Index 0 der Back-Cams**
+  (= meist Hauptlinse, zuverlässig getestet auf Samsung Galaxy). `📷 N/M`-Button im
+  Scanner lässt durch alle Linsen zyklen; Auswahl in localStorage `inventur_cam_idx`.
+- Fokus: `focusDistance: min` wird versucht (Build 69), hilft auf einigen Phones als
+  Macro-Erzwingung — aber der Kamera-Wechsel wirkt stärker.
 
 ---
 
