@@ -149,9 +149,9 @@
       display: block;
       object-fit: cover;
     }
-    .torch-btn {
+    .torch-btn, .cam-btn {
       position: absolute;
-      top: 10px; right: 10px;
+      top: 10px;
       width: 44px; height: 44px;
       border-radius: 50%; border: none;
       background: rgba(0,0,0,.55);
@@ -160,7 +160,10 @@
       -webkit-tap-highlight-color: transparent;
       z-index: 2;
     }
+    .torch-btn { right: 10px; }
     .torch-btn.on { background: #ffd84a; color: #000; }
+    .cam-btn { right: 64px; font-size: 16px; }
+    .cam-btn .idx { font-size: 11px; display: block; line-height: 1; margin-top: -2px; }
     .zoom-row {
       display: flex; align-items: center; gap: 10px;
       margin-top: 8px; padding: 0 4px;
@@ -534,6 +537,7 @@
   <div class="modal">
     <div class="scanner-wrap">
       <video id="video-main" playsinline muted autoplay></video>
+      <button type="button" class="cam-btn" id="cam-main" onclick="cycleCamera('main')" hidden>📷<span class="idx" id="cam-idx-main"></span></button>
       <button type="button" class="torch-btn" id="torch-main" onclick="toggleTorch('main')" hidden>🔦</button>
     </div>
     <div class="zoom-row" id="zoom-main" hidden>
@@ -569,6 +573,7 @@
   <div class="modal">
     <div class="scanner-wrap">
       <video id="video-ss" playsinline muted autoplay></video>
+      <button type="button" class="cam-btn" id="cam-ss" onclick="cycleCamera('ss')" hidden>📷<span class="idx" id="cam-idx-ss"></span></button>
       <button type="button" class="torch-btn" id="torch-ss" onclick="toggleTorch('ss')" hidden>🔦</button>
     </div>
     <div class="zoom-row" id="zoom-ss" hidden>
@@ -596,7 +601,7 @@
 const MASTERLIST_URL  = 'data/masterlist.json';
 const SESSION_KEY     = 'inventur_v1';
 const WH_FILTER_KEY   = 'inventur_wh_filter';
-const BUILD           = 69;
+const BUILD           = 70;
 
 let whFilter = null; // null = all visible; Set<sub> = filtered
 
@@ -642,6 +647,14 @@ let scan1D = null;
 let scanSS = null;
 let scanQR = null;
 
+// Kamera-Auswahl (Android-Phones haben oft mehrere Rückkameras; Chrome wählt per
+// `facingMode: 'environment'` bei 1920×1080 manchmal die Ultraweitwinkel-Linse mit
+// schlechter Nah-Fokussierung). _backCams wird beim ersten startScan gefüllt,
+// _camIdx ist der vom User gewählte Index (persistiert in localStorage).
+let _backCams = [];
+let _camIdx = parseInt(localStorage.getItem('inventur_cam_idx') || '0', 10);
+const _restartScan = { main: null, ss: null };
+
 // Format mapping: BarcodeDetector-Spec → zxing-wasm
 const ZX_FMT = { 'code_128': 'Code128', 'qr_code': 'QRCode' };
 
@@ -653,13 +666,38 @@ const ZX_FMT = { 'code_128': 'Code128', 'qr_code': 'QRCode' };
 // False positives (kurze Kantenrauschen-Matches) werden verworfen, Loop läuft weiter.
 async function startScan(videoEl, formats, callback, accept) {
   const eng = await window.scannerReady;
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: {
-      facingMode: { ideal: 'environment' },
-      width:  { ideal: 1920 },
-      height: { ideal: 1080 },
-    }
-  });
+
+  // Schritt 1: Kamera öffnen. Wenn wir schon einen bevorzugten Device-ID gespeichert
+  // haben (aus _backCams[_camIdx]), direkt damit öffnen. Sonst per facingMode.
+  const preferredId = _backCams[_camIdx]?.deviceId;
+  const baseVideo = { width: { ideal: 1920 }, height: { ideal: 1080 } };
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: preferredId
+        ? { ...baseVideo, deviceId: { exact: preferredId } }
+        : { ...baseVideo, facingMode: { ideal: 'environment' } }
+    });
+  } catch (e) {
+    // Fallback: wenn exact deviceId fehlgeschlagen ist, nochmal mit facingMode
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { ...baseVideo, facingMode: { ideal: 'environment' } }
+    });
+  }
+
+  // Schritt 2: Geräte enumerieren (Label erst nach Permission sichtbar). Back-Kameras
+  // filtern. Auf Android gibt es oft 2-4 davon (Haupt/Ultraweit/Tele/Macro).
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const all = devices.filter(d => d.kind === 'videoinput');
+    const backs = all.filter(d => /back|rück|rear|environment/i.test(d.label));
+    _backCams = backs.length ? backs : all;
+    // aktuelle Kamera im Index nachziehen
+    const curId = stream.getVideoTracks()[0].getSettings().deviceId;
+    const idx = _backCams.findIndex(d => d.deviceId === curId);
+    if (idx >= 0) _camIdx = idx;
+  } catch (_) {}
+
   const track = stream.getVideoTracks()[0];
   let caps = {};
   let focusResult = '';
@@ -689,7 +727,8 @@ async function startScan(videoEl, formats, callback, accept) {
   if (caps.focusDistance) capList.push(`fDist(${caps.focusDistance.min}-${caps.focusDistance.max})`);
   const res = (settings.width && settings.height) ? `${settings.width}×${settings.height}` : '';
   const cam = track.label ? ' · ' + track.label.slice(0, 35) : '';
-  _dbgLog.unshift(`<span style="color:#0cf">${eng.mode}${res ? ' · ' + res : ''}${cam}</span>`);
+  const camPos = _backCams.length ? ` [${_camIdx + 1}/${_backCams.length}]` : '';
+  _dbgLog.unshift(`<span style="color:#0cf">${eng.mode}${res ? ' · ' + res : ''}${cam}${camPos}</span>`);
   _dbgLog.unshift(`<span style="color:#0cf">caps: ${capList.join(' ') || 'none'}</span>`);
   if (focusResult) {
     const color = focusResult.startsWith('FAIL') ? '#f80' : '#0f0';
@@ -780,6 +819,17 @@ function setupTrackControls(track, key) {
       torchBtn.hidden = true;
     }
   }
+  // Camera cycle (nur zeigen wenn mehr als eine Rückkamera)
+  const camBtn = document.getElementById('cam-' + key);
+  const camIdxEl = document.getElementById('cam-idx-' + key);
+  if (camBtn) {
+    if (_backCams.length > 1) {
+      camBtn.hidden = false;
+      if (camIdxEl) camIdxEl.textContent = `${_camIdx + 1}/${_backCams.length}`;
+    } else {
+      camBtn.hidden = true;
+    }
+  }
   // Zoom
   const zoomWrap = document.getElementById('zoom-' + key);
   const zoomSlider = document.getElementById('zoom-slider-' + key);
@@ -802,6 +852,16 @@ function hideTrackControls(key) {
   if (torchBtn) { torchBtn.hidden = true; torchBtn.classList.remove('on'); }
   const zoomWrap = document.getElementById('zoom-' + key);
   if (zoomWrap) zoomWrap.hidden = true;
+  const camBtn = document.getElementById('cam-' + key);
+  if (camBtn) camBtn.hidden = true;
+}
+
+async function cycleCamera(key) {
+  if (!_backCams || _backCams.length < 2) return;
+  _camIdx = (_camIdx + 1) % _backCams.length;
+  localStorage.setItem('inventur_cam_idx', String(_camIdx));
+  const restart = _restartScan[key];
+  if (restart) await restart();
 }
 
 async function toggleTorch(key) {
@@ -1226,7 +1286,8 @@ async function toggleScan() {
   const dbgEl = document.getElementById('scan-debug');
   if (dbgEl) dbgEl.innerHTML = '';
 
-  try {
+  const startMain = async () => {
+    if (scan1D) { scan1D.stop(); scan1D = null; }
     scan1D = await startScan(
       document.getElementById('video-main'),
       ['code_128'],
@@ -1234,6 +1295,11 @@ async function toggleScan() {
       isInventoryCode
     );
     setupTrackControls(scan1D.track, 'main');
+  };
+  _restartScan.main = startMain;
+
+  try {
+    await startMain();
   } catch (e) {
     alert('Camera error: ' + e.message);
     stopScan();
@@ -1395,7 +1461,8 @@ async function startSearchScan() {
   const hintEl = document.getElementById('ss-hint');
   hintEl.textContent = 'Hold barcode in the center of the frame …';
 
-  try {
+  const startSS = async () => {
+    if (scanSS) { scanSS.stop(); scanSS = null; }
     scanSS = await startScan(
       document.getElementById('video-ss'),
       ['code_128'],
@@ -1409,6 +1476,11 @@ async function startSearchScan() {
       isInventoryCode
     );
     setupTrackControls(scanSS.track, 'ss');
+  };
+  _restartScan.ss = startSS;
+
+  try {
+    await startSS();
   } catch (e) {
     alert('Camera error: ' + e.message);
     modal.classList.remove('open');
