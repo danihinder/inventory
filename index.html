@@ -601,7 +601,7 @@
 const MASTERLIST_URL  = 'data/masterlist.json';
 const SESSION_KEY     = 'inventur_v1';
 const WH_FILTER_KEY   = 'inventur_wh_filter';
-const BUILD           = 71;
+const BUILD           = 72;
 
 let whFilter = null; // null = all visible; Set<sub> = filtered
 
@@ -811,6 +811,11 @@ async function startScan(videoEl, formats, callback, accept) {
 
 // Validator: inventory barcodes are always 7 or 10 digits
 const isInventoryCode = (raw) => /^(\d{7}|\d{10})$/.test(raw);
+
+// Item-Nummern kanonisch ohne führende Nullen (Backoffice liefert z.B. "0001201208",
+// Masterlist führt "1201208"). generate_masterlist.py strippt Nullen ebenso (lstrip('0')).
+// So matchen Scan, Inventarliste und Masterlist unabhängig von führenden Nullen.
+const normItem = (c) => String(c == null ? '' : c).trim().replace(/^0+(?=\d)/, '');
 
 // Track control state per modal (main, ss)
 const _tracks = { main: null, ss: null };
@@ -1027,13 +1032,20 @@ function ageClass(item, wh) {
     const raw = localStorage.getItem(SESSION_KEY);
     if (raw) {
       const s = JSON.parse(raw);
+      // Alt-Sessions konnten Keys mit führenden Nullen enthalten → normalisieren + mergen
+      const scanned = {};
+      for (const [k, v] of Object.entries(s.scanned || {})) {
+        const key = normItem(k);
+        scanned[key] = (scanned[key] || 0) + v;
+      }
+      if (Array.isArray(s.inv)) s.inv.forEach(i => { i.item = normItem(i.item); });
       Object.assign(S, {
         inv:      s.inv,
         wh:       s.wh,
         whName:   s.whName,
         fname:    s.fname,
         fdataB64: s.fdataB64,
-        scanned:  s.scanned || {},
+        scanned,
       });
       if (S.fdataB64) {
         S.fdata = b64ToBuffer(S.fdataB64);
@@ -1165,7 +1177,7 @@ async function _loadXlsx(buf, filename, msg) {
 
     S.inv = [];
     for (let r = 1; r < raw.length; r++) {
-      const itm = String(raw[r][iItm] || '').trim();
+      const itm = normItem(raw[r][iItm]);
       if (!itm) continue;
       S.inv.push({
         tag:  String(raw[r][iTag] || '').trim(),
@@ -1325,6 +1337,8 @@ function stopScan() {
 function handleCode(code) {
   // Nur 7- oder 10-stellige Zahlen akzeptieren
   if (!/^(\d{7}|\d{10})$/.test(code)) return;
+  // Führende Nullen weg → matcht mit/ohne (0001201208 == 1201208)
+  code = normItem(code);
 
   const now = Date.now();
   if (code === lastCode && now - lastCodeTime < 2500) return;
@@ -1346,7 +1360,7 @@ function handleCode(code) {
 // ── MANUAL ADD ───────────────────────────────────────────────────────────────
 function onManualAdd() {
   const inp  = document.getElementById('manual-inp');
-  const code = inp.value.trim();
+  const code = normItem(inp.value);
   if (!code) return;
   inp.value = '';
   openQtyModal(code);
@@ -1411,7 +1425,7 @@ function closeQtyModal() {
 
 // ── PART SEARCH ──────────────────────────────────────────────────────────────
 function doSearch() {
-  const q   = document.getElementById('srch-inp').value.trim();
+  const q   = normItem(document.getElementById('srch-inp').value);
   const div = document.getElementById('srch-result');
   if (!q) return;
 
@@ -1595,7 +1609,8 @@ async function mergeQRPayload(text) {
     const imported = JSON.parse(jsonStr);
     let n = 0;
     for (const [item, qty] of Object.entries(imported)) {
-      S.scanned[item] = (S.scanned[item] || 0) + qty;
+      const key = normItem(item);
+      S.scanned[key] = (S.scanned[key] || 0) + qty;
       n++;
     }
     saveSession();
@@ -1928,7 +1943,7 @@ async function _buildFilledXlsx() {
   if (iGez < 0) throw new Error('"Gezählt" column not found.');
 
   for (let r = 1; r < raw.length; r++) {
-    const itm = String(raw[r][iItm] || '').trim();
+    const itm = normItem(raw[r][iItm]);
     if (!itm) continue;
     const count = S.scanned[itm] || 0;
     ws[XLSX.utils.encode_cell({ r, c: iGez })] = { t: 'n', v: count };
