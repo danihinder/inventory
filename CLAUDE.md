@@ -194,6 +194,23 @@ Bei neuem Linux-Rechner: `masterlist_watch.sh` erstellen, systemd-Service einric
 
 ---
 
+## Netzwerk-Umgebung (Dev-Rechner mit Cisco Umbrella)
+
+Dieser Rechner filtert GitHub über einen **Cisco-Umbrella-DNS-Filter** (siehe `/sync/CLAUDE.md` → „Environment: Network"). Relevanz für dieses Projekt:
+
+- **Publish-Weg unbetroffen:** `generate_masterlist.py` und `git push` laufen über **SSH zu `github.com`** (echte IP, kein TLS-Cert-Trust) → funktioniert klaglos.
+- **Daten-Laden meist OK, selten flaky:** Die PWA zieht `data/masterlist.json` von ihrer eigenen Origin `danihinder.github.io`. **`*.github.io` ist NICHT hart blockiert** (löst auf echte Pages-IP `185.199.x.x` auf, Fetch getestet HTTP 200). Nur wenn die PWA **im Browser auf diesem Rechner** getestet wird, können vereinzelt **transiente DNS-Aussetzer** (`getaddrinfo failed`) das Laden kurz stören — kein Dauerblock, meist beim Reload weg. Endnutzer auf anderen Netzen (Handy etc.) sind ohnehin nicht betroffen.
+- **Hart blockiert ist nur `raw.githubusercontent.com`** (`146.112.x.x` → `CERTIFICATE_VERIFY_FAILED`) — nutzt dieses Projekt nicht.
+
+**Fallback, falls github.io hier je zu unzuverlässig wird:** masterlist.json stattdessen vom freien `api.github.com`-Contents-Endpoint laden — es ist ein Cross-Origin-Fetch, aber api.github.com sendet CORS-Header:
+
+```js
+fetch("https://api.github.com/repos/danihinder/inventory/contents/data/masterlist.json?ref=main",
+      { headers: { Accept: "application/vnd.github.raw+json" } })  // → JSON roh, ETag/304, public = ohne Token (60/h pro IP)
+```
+
+Referenz: `TSM/dartagnan.py` `_run_masterlist_fetch` wurde 2026-07-13 aus Robustheitsgründen genau so umgestellt (Python-Seite).
+
 ## Bekannte Einschränkungen / Offene Punkte
 
 - QR-Merge hat 2953-Zeichen-Limit → bei vielen Artikeln zu klein
