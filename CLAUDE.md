@@ -22,7 +22,8 @@ Bewusste Entscheidung: kein Node.js, kein npm, kein Framework — direkt im Brow
 | `manifest.json` | PWA-Metadaten (Icon als inline SVG data-URI) |
 | `sw.js` | Service Worker, Cache-Name = `inventur-v<Build>` |
 | `data/masterlist.json` | Stammdaten: Artikelname + QOH/MIN je Lager |
-| `generate_masterlist.py` | Konvertiert Masterlist-XLSX → masterlist.json + auto git push |
+| `generate_masterlist.py` | Konvertiert Inventarliste(n) → masterlist.json + auto git push (Pipeline s.u.) |
+| `inventar_mail_watch.py` | Windows/Outlook: speichert wöchentliche Inventarliste aus Mail-Anhang, ruft danach `generate_masterlist.py` auf (gesamte Pipeline in einem Prozess) |
 
 ---
 
@@ -52,17 +53,23 @@ Persistenz: `localStorage` Key `inventur_v1` (JSON), wird bei jedem `saveSession
 ```json
 {
   "_generated": "2026-02-26",
+  "_stand": "2026-07-28",
+  "_source": "weekly:Inventory 28072026.xlsx",
   "_w": { "CHU.8678": "Edubook", "CHU.1234": "Anderer Standort" },
   "i": {
     "1070128700": {
       "n": "BELT-TIMING-1830-2MR09",
-      "l": { "CHU.8678": {"min": 1, "qoh": 2} }
+      "l": { "CHU.8678": {"min": 1, "qoh": 2, "a": 3} }
     }
   }
 }
 ```
 
-Wird erzeugt von `generate_masterlist.py` aus `PART_MGMT/input/Inventory value by item number…xlsx`.
+`l.<lager>.a` = Age-Rank (0–5, siehe `parse_age_rank`), `l.<lager>.v` = Preis
+(TOTAL STOCK VALUE) — beide optional, `index.html` fällt bei Fehlen sauber auf
+neutrale Darstellung zurück (`ageClass` → `''`, Preis → `—`).
+
+Wird erzeugt von `generate_masterlist.py`, siehe „Masterlist-Pipeline" unten.
 SW-Strategie: **Network-first** (immer aktuellste Daten, Fallback Cache).
 
 ---
@@ -179,18 +186,77 @@ Artikel gilt als "vollständig" wenn deficit = 0.
 
 ---
 
-## Linux/WSL Setup (auf Windows-Rechnern mit WSL)
+## Masterlist-Pipeline (seit 2026-08-04)
 
-`generate_masterlist.py` läuft auf Linux via Wrapper-Script und systemd-Service:
+Zwei Quellen, automatisch verkettet mit Fallback + Alarm:
 
-- **`~/masterlist_watch.sh`** — ruft das Script mit dem Windows-Pfad auf:
-  ```
-  --input "/mnt/c/sync/moebius/PART_MGMT/input/Inventory value by item number, planned status, and age.xlsx" --watch
-  ```
-- **systemd-Service** `masterlist-watch` — startet automatisch beim Ubuntu-Start
-- Logs: `journalctl -u masterlist-watch -f`
+1. **Primärquelle: wöchentliche Inventarliste** (`PART_MGMT/weekly_inventorylist/*.xlsx`) —
+   kommt per Mail von `giovanni.fiore@canon.ch` bzw. `ch-sphd@canon.ch`, wird von
+   `inventar_mail_watch.py` (Outlook-COM, Windows-seitig) automatisch als
+   xlsx-Anhang dort gespeichert. Betreff/Dateiname variieren stark und
+   unvorhersehbar ("Inventory 28072026", "Inventurliste 21.07.2026", ...) —
+   `generate_masterlist.py` sucht sich selbst die *neueste Datei per Datum im
+   Dateinamen* (`parse_snapshot_date`, mehrere Formate) und liest Spalten *per
+   Name* (nicht per fixem Index), weil dieses Format nicht von uns kontrolliert
+   wird und schon mehrfach leicht variiert hat (Spaltenreihenfolge, fehlende
+   Spalten). Diese Quelle hat **keine Preisspalte** (bewusst kein Problem, siehe
+   masterlist.json-Format oben) und keine feste Spaltenanzahl.
+2. **Fallback: alte Quelle** `Inventory value by item number, planned status,
+   and age.xlsx` — liegt seit 2026-08-04 im **selben Ordner**
+   (`PART_MGMT/weekly_inventorylist/`, nicht mehr `PART_MGMT/input/`), fester Dateiname
+   und festes Spaltenlayout (`COL_*`-Konstanten), ein einzelner
+   Datenlieferant, inkl. Preis. `find_latest_weekly_file` erkennt sie am
+   festen Namen und wertet sie nie als wöchentlichen Snapshot.
 
-Bei neuem Linux-Rechner: `masterlist_watch.sh` erstellen, systemd-Service einrichten (siehe git history oder frag Claude).
+**Wann greift der Fallback:** Nur wenn 1) die wöchentliche Liste fehlt oder
+ihr Spaltenlayout nicht mehr zu den Pflichtspalten (`WEEKLY_REQUIRED_COLS`)
+passt, UND 2) die Fallback-Datei (per Datei-Änderungsdatum) **neuer** ist als
+der `_stand` der bereits vorhandenen `masterlist.json`
+(`read_existing_stand`). Ist die Fallback-Datei nicht neuer (z.B. eine alte,
+liegengebliebene Kopie) — **passiert nichts**: `masterlist.json` bleibt
+byte-identisch unverändert, kein Commit, kein Push, kein Rückschritt zu
+älteren Daten. Genauso wenn gar keine Fallback-Datei existiert.
+
+**Alarm-Mechanismus:** In jedem dieser Fehlerfälle schreibt
+`generate_masterlist.py` eine `PART_MGMT/weekly_inventorylist/_masterlist_alarm.txt` mit
+Zeitstempel, genauer Fehlermeldung und was daraufhin passiert ist (Fallback
+genutzt / Fallback zu alt / kein Fallback). Die Alarm-Datei bleibt bestehen
+bis die wöchentliche Quelle wieder erfolgreich gelesen wird (dann automatisch
+gelöscht). Wird der Fallback tatsächlich verwendet, landet zusätzlich ein
+Hinweis in der Commit-Message ("... (Fallback: alte Quelle wg.
+Format-Problem)").
+
+**`inventar_mail_watch.py`** (Windows, `pywin32`, Outlook muss laufen):
+sucht neue Mails der beiden Absender, speichert nur `.xlsx`-Anhänge (der
+mitgeschickte `.pdf`-Anhang wird ignoriert) unter Originalname in
+`PART_MGMT/weekly_inventorylist/`. Dedup über Outlook-`EntryID` in
+`_inventar_mail_watch.json`. Ruft danach **selbst** `generate_masterlist.py`
+im selben Ordner auf (Konvertierung + Push) — bei jedem Poll, nicht nur wenn
+neue Mail gefunden wurde, damit auch manuell abgelegte Dateien erfasst
+werden; das ist billig, weil `generate_masterlist.py` nur pusht wenn sich
+`masterlist.json` tatsächlich geändert hat. Start: `inventar_mail_watch.bat`
+(eigener `.venv` via `_venv.bat`/`requirements.txt`, analog zu
+`TSM/printer_errors_watch.bat`) — idealerweise per Verknüpfung in
+`shell:startup`, dann läuft es automatisch mit jedem Login mit.
+
+Damit läuft die **gesamte Pipeline in einem einzigen Windows-Prozess**, in
+genau dem Ordner (`/mnt/c/sync/moebius/inventur-pwa/`), den auch Claude Code
+normalerweise bearbeitet — kein separater Watcher, keine zweite Git-Clone.
+
+## Frühere Architektur (bis 2026-08-04, retired)
+
+Bis 2026-08-04 lief die Konvertierung als **separater WSL/systemd-Dienst**
+(`masterlist-watch`, via `~/masterlist_watch.sh` mit `--watch`), der aus
+einer **eigenen WSL-nativen Git-Clone** unter `/home/dani/inventory/` (nicht
+`/mnt/c/sync/moebius/inventur-pwa/`) lief. Das führte wiederholt zu
+Verwirrung, weil Änderungen am Skript erst nach `git pull` in dieser zweiten
+Clone + Service-Neustart wirksam wurden. Mit `inventar_mail_watch.py`, das
+seither die Konvertierung selbst anstösst (s.o.), wurde dieser Dienst
+überflüssig und deaktiviert. Falls hier künftig doch wieder ein WSL-seitiger
+Watcher gebraucht wird (z.B. als unabhängiger Fallback falls der
+Windows-Prozess mal nicht läuft): `generate_masterlist.py --watch` existiert
+unverändert und funktioniert weiterhin eigenständig, sollte dann aber direkt
+aus `/mnt/c/sync/moebius/inventur-pwa/` laufen statt aus einer zweiten Clone.
 
 ---
 
