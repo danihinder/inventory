@@ -5,8 +5,10 @@ Outlook muss laufen.
 
 Absender: giovanni.fiore@canon.ch und ch-sphd@canon.ch. Der Betreff variiert
 stark und unvorhersehbar (mal "Inventory nnnnnnnn", mal "Inventurliste
-nn.nn.nnnn", ...) - es wird deshalb NICHT nach Betreff gefiltert, nur nach
-Absender + xlsx-Anhang. Mails haben meist 2 Anhänge (pdf + xlsx); nur die
+nn.nn.nnnn", ...) - es wird deshalb NICHT nach Betreff gefiltert, sondern nach
+Absender + xlsx-Anhang + Anhang-Dateiname beginnt mit "Invent" (deckt
+Inventory/Inventar-/Inventurliste ab, filtert aber sonstige xlsx-Anhänge als
+Rauschen raus). Mails haben meist 2 Anhänge (pdf + xlsx); nur die passende
 xlsx wird gespeichert, der Dateiname wird unverändert vom Anhang übernommen
 (generate_masterlist.py parst das Datum daraus).
 
@@ -204,6 +206,11 @@ def fetch_and_save(ns, inventar_dir: Path, seen_ids: list[str], dry_run: bool) -
             if not name.lower().endswith(".xlsx"):
                 continue
             found_xlsx = True
+
+            if not name.lower().startswith("invent"):
+                print(f"  ~ ignoriert (Anhangname beginnt nicht mit 'Invent'): {name}  [{sender}]")
+                continue
+
             try:
                 att_size = att.Size
             except Exception:
