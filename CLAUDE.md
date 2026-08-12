@@ -227,8 +227,10 @@ Hinweis in der Commit-Message ("... (Fallback: alte Quelle wg.
 Format-Problem)").
 
 **`inventar_mail_watch.py`** (Windows, `pywin32`, Outlook muss laufen):
-sucht neue Mails der beiden Absender, speichert nur `.xlsx`-Anhänge (der
-mitgeschickte `.pdf`-Anhang wird ignoriert) unter Originalname in
+sucht neue Mails der beiden Absender, speichert nur `.xlsx`-Anhänge deren
+Dateiname mit `Invent` beginnt (deckt Inventory/Inventar-/Inventurliste ab,
+filtert sonstige Anhänge wie Preislisten als Rauschen raus; der mitgeschickte
+`.pdf`-Anhang wird ohnehin ignoriert) unter Originalname in
 `PART_MGMT/weekly_inventorylist/`. Dedup über Outlook-`EntryID` in
 `_inventar_mail_watch.json`. Ruft danach **selbst** `generate_masterlist.py`
 im selben Ordner auf (Konvertierung + Push) — bei jedem Poll, nicht nur wenn
